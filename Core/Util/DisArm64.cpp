@@ -21,7 +21,8 @@
 // Does enough to understand what's going on without having to resort to an
 // external disassembler all the time...
 
-#include <stdlib.h>
+#include <cstdlib>
+#include <cstring>
 
 #include "Common/Arm64Emitter.h"
 #include "Common/StringUtils.h"
@@ -84,7 +85,6 @@ int HighestSetBit(int value) {
 }
 
 int LowestSetBit(int value, int maximum = 32) {
-	int lowest = 0;
 	for (int i = 0; i < maximum; i++) {
 		if (value & (1 << i))
 			return i;

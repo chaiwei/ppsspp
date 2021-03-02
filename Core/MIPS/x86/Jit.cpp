@@ -21,10 +21,11 @@
 #include <algorithm>
 #include <iterator>
 
-#include "math/math_util.h"
-#include "profiler/profiler.h"
+#include "Common/Math/math_util.h"
+#include "Common/Profiler/Profiler.h"
 
-#include "Common/ChunkFile.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
 #include "Core/Core.h"
 #include "Core/MemMap.h"
 #include "Core/System.h"
@@ -104,8 +105,8 @@ static void JitLogMiss(MIPSOpcode op)
 // JitBlockCache doesn't use this, just stores it.
 #pragma warning(disable:4355)
 #endif
-Jit::Jit(MIPSState *mips)
-		: blocks(mips, this), mips_(mips) {
+Jit::Jit(MIPSState *mipsState)
+		: blocks(mipsState, this), mips_(mipsState) {
 	blocks.Init();
 	gpr.SetEmitter(this);
 	fpr.SetEmitter(this);
@@ -129,9 +130,9 @@ void Jit::DoState(PointerWrap &p) {
 	if (!s)
 		return;
 
-	p.Do(js.startDefaultPrefix);
+	Do(p, js.startDefaultPrefix);
 	if (s >= 2) {
-		p.Do(js.hasSetRounding);
+		Do(p, js.hasSetRounding);
 		js.lastSetRounding = 0;
 	} else {
 		js.hasSetRounding = 1;
@@ -271,6 +272,11 @@ void Jit::Compile(u32 em_address) {
 	PROFILE_THIS_SCOPE("jitc");
 	if (GetSpaceLeft() < 0x10000 || blocks.IsFull()) {
 		ClearCache();
+	}
+
+	if (!Memory::IsValidAddress(em_address)) {
+		Core_ExecException(em_address, em_address, ExecExceptionType::JUMP);
+		return;
 	}
 
 	BeginWrite();

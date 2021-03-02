@@ -35,11 +35,11 @@
 #include <cstring>
 #include <atomic>
 
-#include "base/logging.h"
-#include "base/timeutil.h"
-#include "base/NativeApp.h"
-#include "Common/ChunkFile.h"
-#include "Common/MathUtil.h"
+#include "Common/System/System.h"
+#include "Common/Math/math_util.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Log.h"
+#include "Common/TimeUtil.h"
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
 #include "Core/HW/StereoResampler.h"
@@ -71,7 +71,7 @@ StereoResampler::StereoResampler()
 	// If framerate is "close"...
 	if (refresh != 60.0f && refresh > 50.0f && refresh < 70.0f) {
 		int input_sample_rate = (int)(44100 * (refresh / 60.0f));
-		ILOG("StereoResampler: Adjusting target sample rate to %dHz", input_sample_rate);
+		INFO_LOG(AUDIO, "StereoResampler: Adjusting target sample rate to %dHz", input_sample_rate);
 		m_input_sample_rate = input_sample_rate;
 	}
 
@@ -161,6 +161,10 @@ void StereoResampler::Clear() {
 	memset(m_buffer, 0, m_maxBufsize * 2 * sizeof(int16_t));
 }
 
+inline int16_t MixSingleSample(int16_t s1, int16_t s2, uint16_t frac) {
+	return s1 + (((s2 - s1) * frac) >> 16);
+}
+
 // Executed from sound stream thread, pulling sound out of the buffer.
 unsigned int StereoResampler::Mix(short* samples, unsigned int numSamples, bool consider_framelimit, int sample_rate) {
 	if (!samples)
@@ -222,10 +226,8 @@ unsigned int StereoResampler::Mix(short* samples, unsigned int numSamples, bool 
 		s16 r1 = m_buffer[(indexR + 1) & INDEX_MASK]; //current
 		s16 l2 = m_buffer[indexR2 & INDEX_MASK]; //next
 		s16 r2 = m_buffer[(indexR2 + 1) & INDEX_MASK]; //next
-		int sampleL = ((l1 << 16) + (l2 - l1) * (u16)frac) >> 16;
-		int sampleR = ((r1 << 16) + (r2 - r1) * (u16)frac) >> 16;
-		samples[currentSample] = sampleL;
-		samples[currentSample + 1] = sampleR;
+		samples[currentSample] = MixSingleSample(l1, l2, (u16)frac);
+		samples[currentSample + 1] = MixSingleSample(r1, r2, (u16)frac);
 		frac += ratio;
 		indexR += 2 * (frac >> 16);
 		frac &= 0xffff;
@@ -291,7 +293,7 @@ void StereoResampler::PushSamples(const s32 *samples, unsigned int numSamples) {
 }
 
 void StereoResampler::GetAudioDebugStats(char *buf, size_t bufSize) {
-	double elapsed = real_time_now() - startTime_;
+	double elapsed = time_now_d() - startTime_;
 
 	double effective_input_sample_rate = (double)inputSampleCount_ / elapsed;
 	double effective_output_sample_rate = (double)outputSampleCount_ / elapsed;
@@ -335,7 +337,7 @@ void StereoResampler::ResetStatCounters() {
 	overrunCountTotal_ = 0;
 	inputSampleCount_ = 0;
 	outputSampleCount_ = 0;
-	startTime_ = real_time_now();
+	startTime_ = time_now_d();
 }
 
 void StereoResampler::DoState(PointerWrap &p) {

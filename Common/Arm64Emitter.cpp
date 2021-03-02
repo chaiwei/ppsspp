@@ -5,25 +5,21 @@
 #include "ppsspp_config.h"
 
 #include <limits>
-#include <algorithm>
 #include <vector>
 #include <cmath>
 #include <cinttypes>
 
-#include <stdlib.h>
-#include <string.h>
+#include <cstdlib>
+#include <cstring>
 
-#include "base/basictypes.h"
+#include "Common/Arm64Emitter.h"
+#include "Common/Math/math_util.h"
+#include "Common/CommonTypes.h"
+#include "Common/CommonWindows.h"
+#include "Common/CPUDetect.h"
+#include "Common/Log.h"
 
-#include "Arm64Emitter.h"
-#include "MathUtil.h"
-#include "CommonTypes.h"
-#include "CommonWindows.h"
-#include "CPUDetect.h"
-
-#include "CommonWindows.h"
-
-#ifdef IOS
+#if PPSSPP_PLATFORM(IOS) || PPSSPP_PLATFORM(MAC)
 #include <libkern/OSCacheControl.h>
 #endif
 
@@ -327,7 +323,7 @@ void ARM64XEmitter::FlushIcache()
 
 void ARM64XEmitter::FlushIcacheSection(const u8 *start, const u8 *end)
 {
-#if defined(IOS)
+#if PPSSPP_PLATFORM(IOS) || PPSSPP_PLATFORM(MAC)
 	// Header file says this is equivalent to: sys_icache_invalidate(start, end - start);
 	sys_cache_control(kCacheFunctionPrepareForExecution, (void *)start, end - start);
 #elif PPSSPP_PLATFORM(WINDOWS)
@@ -335,12 +331,11 @@ void ARM64XEmitter::FlushIcacheSection(const u8 *start, const u8 *end)
 #elif PPSSPP_ARCH(ARM64)
 	// Code from Dolphin, contributed by the Mono project.
 
-	// Don't rely on GCC's __clear_cache implementation, as it caches
-	// icache/dcache cache line sizes, that can vary between cores on
-	// big.LITTLE architectures.
 	size_t isize, dsize;
-
 	if (cpu_info.sQuirks.bExynos8890DifferingCachelineSizes) {
+		// Don't rely on GCC's __clear_cache implementation, as it caches
+		// icache/dcache cache line sizes, that can vary between cores on
+		// very buggy big.LITTLE architectures like Exynos8890D.
 		// Enforce the minimum cache line size to be completely safe on these CPUs.
 		isize = 64;
 		dsize = 64;
@@ -3838,8 +3833,6 @@ bool ARM64XEmitter::TryEORI2R(ARM64Reg Rd, ARM64Reg Rn, u64 imm) {
 }
 
 float FPImm8ToFloat(uint8_t bits) {
-	int E = 8;
-	int F = 32 - 8 - 1;
 	int sign = bits >> 7;
 	uint32_t f = 0;
 	f |= (sign << 31);

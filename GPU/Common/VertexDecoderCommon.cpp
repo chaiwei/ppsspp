@@ -18,11 +18,12 @@
 #include <algorithm>
 #include <cstdio>
 
-#include "base/basictypes.h"
-#include "base/logging.h"
+#include "ppsspp_config.h"
 
+#include "Common/Log.h"
 #include "Common/CPUDetect.h"
 #include "Common/ColorConv.h"
+#include "Common/Common.h"
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
 #include "Core/MemMap.h"
@@ -118,7 +119,7 @@ void GetIndexBounds(const void *inds, int count, u32 vertType, u16 *indexLowerBo
 				lowerBound = value;
 		}
 	} else if (idx == GE_VTYPE_IDX_16BIT) {
-		const u16 *ind16 = (const u16 *)inds;
+		const u16_le *ind16 = (const u16_le *)inds;
 		for (int i = 0; i < count; i++) {
 			u16 value = ind16[i];
 			if (value > upperBound)
@@ -128,7 +129,7 @@ void GetIndexBounds(const void *inds, int count, u32 vertType, u16 *indexLowerBo
 		}
 	} else if (idx == GE_VTYPE_IDX_32BIT) {
 		WARN_LOG_REPORT_ONCE(indexBounds32, G3D, "GetIndexBounds: Decoding 32-bit indexes");
-		const u32 *ind32 = (const u32 *)inds;
+		const u32_le *ind32 = (const u32_le *)inds;
 		for (int i = 0; i < count; i++) {
 			u16 value = (u16)ind32[i];
 			// These aren't documented and should be rare.  Let's bounds check each one.
@@ -192,7 +193,7 @@ void VertexDecoder::Step_WeightsU8() const
 void VertexDecoder::Step_WeightsU16() const
 {
 	u16 *wt = (u16 *)(decoded_ + decFmt.w0off);
-	const u16 *wdata = (const u16*)(ptr_);
+	const u16_le *wdata = (const u16_le *)(ptr_);
 	int j;
 	for (j = 0; j < nweights; j++)
 		wt[j] = wdata[j];
@@ -215,7 +216,7 @@ void VertexDecoder::Step_WeightsU8ToFloat() const
 void VertexDecoder::Step_WeightsU16ToFloat() const
 {
 	float *wt = (float *)(decoded_ + decFmt.w0off);
-	const u16 *wdata = (const u16*)(ptr_);
+	const u16_le *wdata = (const u16_le *)(ptr_);
 	int j;
 	for (j = 0; j < nweights; j++) {
 		wt[j] = (float)wdata[j] * (1.0f / 32768.0f);
@@ -230,7 +231,7 @@ void VertexDecoder::Step_WeightsU16ToFloat() const
 void VertexDecoder::Step_WeightsFloat() const
 {
 	float *wt = (float *)(decoded_ + decFmt.w0off);
-	const float *wdata = (const float*)(ptr_);
+	const float_le *wdata = (const float_le *)(ptr_);
 	int j;
 	for (j = 0; j < nweights; j++) {
 		wt[j] = wdata[j];
@@ -260,7 +261,7 @@ void VertexDecoder::Step_WeightsU8Skin() const {
 }
 
 void VertexDecoder::Step_WeightsU16Skin() const {
-	const u16 *wdata = (const u16*)(ptr_);
+	const u16_le *wdata = (const u16_le *)(ptr_);
 	float weights[8];
 	for (int j = 0; j < nweights; j++)
 		weights[j] = wdata[j] * (1.0f / 32768.0f);
@@ -268,7 +269,7 @@ void VertexDecoder::Step_WeightsU16Skin() const {
 }
 
 void VertexDecoder::Step_WeightsFloatSkin() const {
-	const float *wdata = (const float*)(ptr_);
+	const float_le *wdata = (const float_le *)(ptr_);
 	ComputeSkinMatrix(wdata);
 }
 
@@ -284,7 +285,7 @@ void VertexDecoder::Step_TcU8ToFloat() const
 void VertexDecoder::Step_TcU16ToFloat() const
 {
 	float *uv = (float *)(decoded_ + decFmt.uvoff);
-	const u16 *uvdata = (const u16_le*)(ptr_ + tcoff);
+	const u16_le *uvdata = (const u16_le *)(ptr_ + tcoff);
 	uv[0] = uvdata[0] * (1.0f / 32768.0f);
 	uv[1] = uvdata[1] * (1.0f / 32768.0f);
 }
@@ -292,7 +293,7 @@ void VertexDecoder::Step_TcU16ToFloat() const
 void VertexDecoder::Step_TcU16DoubleToFloat() const
 {
 	float *uv = (float*)(decoded_ + decFmt.uvoff);
-	const u16 *uvdata = (const u16_le*)(ptr_ + tcoff);
+	const u16_le *uvdata = (const u16_le *)(ptr_ + tcoff);
 	uv[0] = uvdata[0] * (1.0f / 16384.0f);
 	uv[1] = uvdata[1] * (1.0f / 16384.0f);
 }
@@ -300,20 +301,20 @@ void VertexDecoder::Step_TcU16DoubleToFloat() const
 void VertexDecoder::Step_TcU16ThroughToFloat() const
 {
 	float *uv = (float *)(decoded_ + decFmt.uvoff);
-	const u16 *uvdata = (const u16_le*)(ptr_ + tcoff);
+	const u16_le *uvdata = (const u16_le *)(ptr_ + tcoff);
 	uv[0] = uvdata[0];
 	uv[1] = uvdata[1];
 
-	gstate_c.vertBounds.minU = std::min(gstate_c.vertBounds.minU, uvdata[0]);
-	gstate_c.vertBounds.maxU = std::max(gstate_c.vertBounds.maxU, uvdata[0]);
-	gstate_c.vertBounds.minV = std::min(gstate_c.vertBounds.minV, uvdata[1]);
-	gstate_c.vertBounds.maxV = std::max(gstate_c.vertBounds.maxV, uvdata[1]);
+	gstate_c.vertBounds.minU = std::min(gstate_c.vertBounds.minU, (u16)uvdata[0]);
+	gstate_c.vertBounds.maxU = std::max(gstate_c.vertBounds.maxU, (u16)uvdata[0]);
+	gstate_c.vertBounds.minV = std::min(gstate_c.vertBounds.minV, (u16)uvdata[1]);
+	gstate_c.vertBounds.maxV = std::max(gstate_c.vertBounds.maxV, (u16)uvdata[1]);
 }
 
 void VertexDecoder::Step_TcU16ThroughDoubleToFloat() const
 {
 	float *uv = (float *)(decoded_ + decFmt.uvoff);
-	const u16 *uvdata = (const u16_le*)(ptr_ + tcoff);
+	const u16_le *uvdata = (const u16_le *)(ptr_ + tcoff);
 	uv[0] = uvdata[0] * 2;
 	uv[1] = uvdata[1] * 2;
 }
@@ -321,7 +322,7 @@ void VertexDecoder::Step_TcU16ThroughDoubleToFloat() const
 void VertexDecoder::Step_TcFloat() const
 {
 	float *uv = (float *)(decoded_ + decFmt.uvoff);
-	const float *uvdata = (const float*)(ptr_ + tcoff);
+	const float_le *uvdata = (const float_le *)(ptr_ + tcoff);
 	uv[0] = uvdata[0];
 	uv[1] = uvdata[1];
 }
@@ -329,7 +330,7 @@ void VertexDecoder::Step_TcFloat() const
 void VertexDecoder::Step_TcFloatThrough() const
 {
 	float *uv = (float *)(decoded_ + decFmt.uvoff);
-	const float *uvdata = (const float*)(ptr_ + tcoff);
+	const float_le *uvdata = (const float_le *)(ptr_ + tcoff);
 	uv[0] = uvdata[0];
 	uv[1] = uvdata[1];
 
@@ -362,7 +363,7 @@ void VertexDecoder::Step_TcU16DoublePrescale() const {
 
 void VertexDecoder::Step_TcFloatPrescale() const {
 	float *uv = (float *)(decoded_ + decFmt.uvoff);
-	const float *uvdata = (const float*)(ptr_ + tcoff);
+	const float_le *uvdata = (const float_le *)(ptr_ + tcoff);
 	uv[0] = uvdata[0] * gstate_c.uv.uScale + gstate_c.uv.uOff;
 	uv[1] = uvdata[1] * gstate_c.uv.vScale + gstate_c.uv.vOff;
 }
@@ -495,7 +496,7 @@ void VertexDecoder::Step_ColorInvalid() const
 void VertexDecoder::Step_Color565() const
 {
 	u8 *c = decoded_ + decFmt.c0off;
-	u16 cdata = *(u16_le *)(ptr_ + coloff);
+	u16 cdata = *(const u16_le *)(ptr_ + coloff);
 	c[0] = Convert5To8(cdata & 0x1f);
 	c[1] = Convert6To8((cdata >> 5) & 0x3f);
 	c[2] = Convert5To8((cdata >> 11) & 0x1f);
@@ -506,7 +507,7 @@ void VertexDecoder::Step_Color565() const
 void VertexDecoder::Step_Color5551() const
 {
 	u8 *c = decoded_ + decFmt.c0off;
-	u16 cdata = *(u16_le *)(ptr_ + coloff);
+	u16 cdata = *(const u16_le *)(ptr_ + coloff);
 	gstate_c.vertexFullAlpha = gstate_c.vertexFullAlpha && (cdata >> 15) != 0;
 	c[0] = Convert5To8(cdata & 0x1f);
 	c[1] = Convert5To8((cdata >> 5) & 0x1f);
@@ -517,7 +518,7 @@ void VertexDecoder::Step_Color5551() const
 void VertexDecoder::Step_Color4444() const
 {
 	u8 *c = decoded_ + decFmt.c0off;
-	u16 cdata = *(u16_le *)(ptr_ + coloff);
+	u16 cdata = *(const u16_le *)(ptr_ + coloff);
 	gstate_c.vertexFullAlpha = gstate_c.vertexFullAlpha && (cdata >> 12) == 0xF;
 	for (int j = 0; j < 4; j++)
 		c[j] = Convert4To8((cdata >> (j * 4)) & 0xF);
@@ -536,7 +537,7 @@ void VertexDecoder::Step_Color565Morph() const
 	float col[3] = { 0 };
 	for (int n = 0; n < morphcount; n++) {
 		float w = gstate_c.morphWeights[n];
-		u16 cdata = *(u16_le *)(ptr_ + onesize_*n + coloff);
+		u16 cdata = *(const u16_le *)(ptr_ + onesize_*n + coloff);
 		col[0] += w * (cdata & 0x1f) * (255.0f / 31.0f);
 		col[1] += w * ((cdata >> 5) & 0x3f) * (255.0f / 63.0f);
 		col[2] += w * ((cdata >> 11) & 0x1f) * (255.0f / 31.0f);
@@ -554,7 +555,7 @@ void VertexDecoder::Step_Color5551Morph() const
 	float col[4] = { 0 };
 	for (int n = 0; n < morphcount; n++) {
 		float w = gstate_c.morphWeights[n];
-		u16 cdata = *(u16_le *)(ptr_ + onesize_*n + coloff);
+		u16 cdata = *(const u16_le *)(ptr_ + onesize_*n + coloff);
 		col[0] += w * (cdata & 0x1f) * (255.0f / 31.0f);
 		col[1] += w * ((cdata >> 5) & 0x1f) * (255.0f / 31.0f);
 		col[2] += w * ((cdata >> 10) & 0x1f) * (255.0f / 31.0f);
@@ -572,7 +573,7 @@ void VertexDecoder::Step_Color4444Morph() const
 	float col[4] = { 0 };
 	for (int n = 0; n < morphcount; n++) {
 		float w = gstate_c.morphWeights[n];
-		u16 cdata = *(u16_le *)(ptr_ + onesize_*n + coloff);
+		u16 cdata = *(const u16_le *)(ptr_ + onesize_*n + coloff);
 		for (int j = 0; j < 4; j++)
 			col[j] += w * ((cdata >> (j * 4)) & 0xF) * (255.0f / 15.0f);
 	}
@@ -620,7 +621,7 @@ void VertexDecoder::Step_NormalS8ToFloat() const
 void VertexDecoder::Step_NormalS16() const
 {
 	s16 *normal = (s16 *)(decoded_ + decFmt.nrmoff);
-	const s16 *sv = (const s16_le*)(ptr_ + nrmoff);
+	const s16_le *sv = (const s16_le *)(ptr_ + nrmoff);
 	for (int j = 0; j < 3; j++)
 		normal[j] = sv[j];
 	normal[3] = 0;
@@ -629,7 +630,7 @@ void VertexDecoder::Step_NormalS16() const
 void VertexDecoder::Step_NormalFloat() const
 {
 	u32 *normal = (u32 *)(decoded_ + decFmt.nrmoff);
-	const u32 *fv = (const u32_le*)(ptr_ + nrmoff);
+	const u32_le *fv = (const u32_le *)(ptr_ + nrmoff);
 	for (int j = 0; j < 3; j++)
 		normal[j] = fv[j];
 }
@@ -645,7 +646,7 @@ void VertexDecoder::Step_NormalS8Skin() const
 void VertexDecoder::Step_NormalS16Skin() const
 {
 	float *normal = (float *)(decoded_ + decFmt.nrmoff);
-	const s16 *sv = (const s16_le*)(ptr_ + nrmoff);
+	const s16_le *sv = (const s16_le *)(ptr_ + nrmoff);
 	const float fn[3] = { sv[0] * (1.0f / 32768.0f), sv[1] * (1.0f / 32768.0f), sv[2] * (1.0f / 32768.0f) };
 	Norm3ByMatrix43(normal, fn, skinMatrix);
 }
@@ -653,7 +654,7 @@ void VertexDecoder::Step_NormalS16Skin() const
 void VertexDecoder::Step_NormalFloatSkin() const
 {
 	float *normal = (float *)(decoded_ + decFmt.nrmoff);
-	const float *fn = (const float *)(ptr_ + nrmoff);
+	const float_le *fn = (const float_le *)(ptr_ + nrmoff);
 	Norm3ByMatrix43(normal, fn, skinMatrix);
 }
 
@@ -674,7 +675,7 @@ void VertexDecoder::Step_NormalS16Morph() const
 	float *normal = (float *)(decoded_ + decFmt.nrmoff);
 	memset(normal, 0, sizeof(float) * 3);
 	for (int n = 0; n < morphcount; n++) {
-		const s16 *sv = (const s16_le *)(ptr_ + onesize_*n + nrmoff);
+		const s16_le *sv = (const s16_le *)(ptr_ + onesize_*n + nrmoff);
 		const float multiplier = gstate_c.morphWeights[n] * (1.0f / 32768.0f);
 		for (int j = 0; j < 3; j++)
 			normal[j] += sv[j] * multiplier;
@@ -687,7 +688,7 @@ void VertexDecoder::Step_NormalFloatMorph() const
 	memset(normal, 0, sizeof(float) * 3);
 	for (int n = 0; n < morphcount; n++) {
 		float multiplier = gstate_c.morphWeights[n];
-		const float *fv = (const float*)(ptr_ + onesize_*n + nrmoff);
+		const float_le *fv = (const float_le *)(ptr_ + onesize_*n + nrmoff);
 		for (int j = 0; j < 3; j++)
 			normal[j] += fv[j] * multiplier;
 	}
@@ -709,7 +710,7 @@ void VertexDecoder::Step_NormalS16MorphSkin() const {
 	float *normal = (float *)(decoded_ + decFmt.nrmoff);
 	float nrm[3]{};
 	for (int n = 0; n < morphcount; n++) {
-		const s16 *sv = (const s16_le *)(ptr_ + onesize_ * n + nrmoff);
+		const s16_le *sv = (const s16_le *)(ptr_ + onesize_ * n + nrmoff);
 		const float multiplier = gstate_c.morphWeights[n] * (1.0f / 32768.0f);
 		for (int j = 0; j < 3; j++)
 			nrm[j] += sv[j] * multiplier;
@@ -722,7 +723,7 @@ void VertexDecoder::Step_NormalFloatMorphSkin() const {
 	float nrm[3]{};
 	for (int n = 0; n < morphcount; n++) {
 		float multiplier = gstate_c.morphWeights[n];
-		const float *fv = (const float*)(ptr_ + onesize_ * n + nrmoff);
+		const float_le *fv = (const float_le *)(ptr_ + onesize_ * n + nrmoff);
 		for (int j = 0; j < 3; j++)
 			nrm[j] += fv[j] * multiplier;
 	}
@@ -740,7 +741,7 @@ void VertexDecoder::Step_PosS8() const
 void VertexDecoder::Step_PosS16() const
 {
 	float *pos = (float *)(decoded_ + decFmt.posoff);
-	const s16 *sv = (const s16_le *)(ptr_ + posoff);
+	const s16_le *sv = (const s16_le *)(ptr_ + posoff);
 	for (int j = 0; j < 3; j++)
 		pos[j] = sv[j] * (1.0f / 32768.0f);
 }
@@ -771,7 +772,7 @@ void VertexDecoder::Step_PosS16Skin() const
 void VertexDecoder::Step_PosFloatSkin() const
 {
 	float *pos = (float *)(decoded_ + decFmt.posoff);
-	const float *fn = (const float *)(ptr_ + posoff);
+	const float_le *fn = (const float_le *)(ptr_ + posoff);
 	Vec3ByMatrix43(pos, fn, skinMatrix);
 }
 
@@ -819,7 +820,7 @@ void VertexDecoder::Step_PosS16Morph() const
 	memset(v, 0, sizeof(float) * 3);
 	for (int n = 0; n < morphcount; n++) {
 		const float multiplier = 1.0f / 32768.0f;
-		const s16 *sv = (const s16*)(ptr_ + onesize_*n + posoff);
+		const s16_le *sv = (const s16_le *)(ptr_ + onesize_*n + posoff);
 		for (int j = 0; j < 3; j++)
 			v[j] += (float)sv[j] * (multiplier * gstate_c.morphWeights[n]);
 	}
@@ -830,7 +831,7 @@ void VertexDecoder::Step_PosFloatMorph() const
 	float *v = (float *)(decoded_ + decFmt.posoff);
 	memset(v, 0, sizeof(float) * 3);
 	for (int n = 0; n < morphcount; n++) {
-		const float *fv = (const float*)(ptr_ + onesize_*n + posoff);
+		const float_le *fv = (const float_le *)(ptr_ + onesize_*n + posoff);
 		for (int j = 0; j < 3; j++)
 			v[j] += fv[j] * gstate_c.morphWeights[n];
 	}
@@ -853,7 +854,7 @@ void VertexDecoder::Step_PosS16MorphSkin() const {
 	float pos[3]{};
 	for (int n = 0; n < morphcount; n++) {
 		const float multiplier = 1.0f / 32768.0f;
-		const s16 *sv = (const s16*)(ptr_ + onesize_ * n + posoff);
+		const s16_le *sv = (const s16_le *)(ptr_ + onesize_ * n + posoff);
 		for (int j = 0; j < 3; j++)
 			pos[j] += (float)sv[j] * (multiplier * gstate_c.morphWeights[n]);
 	}
@@ -864,7 +865,7 @@ void VertexDecoder::Step_PosFloatMorphSkin() const {
 	float *v = (float *)(decoded_ + decFmt.posoff);
 	float pos[3]{};
 	for (int n = 0; n < morphcount; n++) {
-		const float *fv = (const float*)(ptr_ + onesize_ * n + posoff);
+		const float_le *fv = (const float_le *)(ptr_ + onesize_ * n + posoff);
 		for (int j = 0; j < 3; j++)
 			pos[j] += fv[j] * gstate_c.morphWeights[n];
 	}
@@ -1345,14 +1346,14 @@ std::string VertexDecoder::GetString(DebugShaderStringType stringType) {
 			if (!jitted_)
 				return "Not compiled";
 			std::vector<std::string> lines;
-#if defined(ARM64)
+#if PPSSPP_ARCH(ARM64)
 			lines = DisassembleArm64((const u8 *)jitted_, jittedSize_);
-#elif defined(ARM)
+#elif PPSSPP_ARCH(ARM)
 			lines = DisassembleArm2((const u8 *)jitted_, jittedSize_);
-#elif defined(MIPS)
-			// No MIPS disassembler defined
-#else
+#elif PPSSPP_ARCH(X86) || PPSSPP_ARCH(AMD64)
 			lines = DisassembleX86((const u8 *)jitted_, jittedSize_);
+#else
+			// No disassembler defined
 #endif
 			std::string buffer;
 			for (auto line : lines) {
@@ -1389,5 +1390,7 @@ VertexDecoderJitCache::VertexDecoderJitCache()
 }
 
 void VertexDecoderJitCache::Clear() {
-	ClearCodeSpace(0);
+	if (g_Config.iCpuCore == (int)CPUCore::JIT) {
+		ClearCodeSpace(0);
+	}
 }

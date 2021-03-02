@@ -84,7 +84,7 @@ extern u32 g_PSPModel;
 
 // UWP has such limited memory management that we need to mask
 // even in 64-bit mode. Also, when using the sanitizer, we need to mask as well.
-#if PPSSPP_ARCH(32BIT) || PPSSPP_PLATFORM(UWP) || USE_ADDRESS_SANITIZER
+#if PPSSPP_ARCH(32BIT) || PPSSPP_PLATFORM(UWP) || USE_ASAN || PPSSPP_PLATFORM(IOS)
 #define MASKED_PSP_MEMORY
 #endif
 
@@ -175,9 +175,9 @@ inline u32 ReadUnchecked_U32(const u32 address) {
 
 inline float ReadUnchecked_Float(const u32 address) {
 #ifdef MASKED_PSP_MEMORY
-	return *(float *)(base + (address & MEMVIEW32_MASK));
+	return *(float_le *)(base + (address & MEMVIEW32_MASK));
 #else
-	return *(float *)(base + address);
+	return *(float_le *)(base + address);
 #endif
 }
 
@@ -207,9 +207,9 @@ inline void WriteUnchecked_U32(u32 data, u32 address) {
 
 inline void WriteUnchecked_Float(float data, u32 address) {
 #ifdef MASKED_PSP_MEMORY
-	*(float *)(base + (address & MEMVIEW32_MASK)) = data;
+	*(float_le *)(base + (address & MEMVIEW32_MASK)) = data;
 #else
-	*(float *)(base + address) = data;
+	*(float_le *)(base + address) = data;
 #endif
 }
 
@@ -255,7 +255,23 @@ inline void Write_Float(float f, u32 address)
 
 u8* GetPointer(const u32 address);
 bool IsRAMAddress(const u32 address);
-bool IsVRAMAddress(const u32 address);
+inline bool IsVRAMAddress(const u32 address) {
+	return ((address & 0x3F800000) == 0x04000000);
+}
+inline bool IsDepthTexVRAMAddress(const u32 address) {
+	return ((address & 0x3FE00000) == 0x04200000) || ((address & 0x3FE00000) == 0x04600000);
+}
+
+// 0x08000000 -> 0x08800000
+inline bool IsKernelAddress(const u32 address) {
+	return ((address & 0x3F800000) == 0x08000000);
+}
+
+// 0x08000000 -> 0x08400000
+inline bool IsKernelAndNotVolatileAddress(const u32 address) {
+	return ((address & 0x3FC00000) == 0x08000000);
+}
+
 bool IsScratchpadAddress(const u32 address);
 
 // Used for auto-converted char * parameters, which can sometimes legitimately be null -
@@ -449,8 +465,11 @@ inline u32 PSP_GetScratchpadMemoryEnd() { return 0x00014000;}
 inline u32 PSP_GetKernelMemoryBase() { return 0x08000000;}
 inline u32 PSP_GetUserMemoryEnd() { return PSP_GetKernelMemoryBase() + Memory::g_MemorySize;}
 inline u32 PSP_GetKernelMemoryEnd() { return 0x08400000;}
+
 // "Volatile" RAM is between 0x08400000 and 0x08800000, can be requested by the
 // game through sceKernelVolatileMemTryLock.
+inline u32 PSP_GetVolatileMemoryStart() { return 0x08400000; }
+inline u32 PSP_GetVolatileMemoryEnd() { return 0x08800000; }
 
 inline u32 PSP_GetUserMemoryBase() { return 0x08800000;}
 inline u32 PSP_GetDefaultLoadAddress() { return 0;}

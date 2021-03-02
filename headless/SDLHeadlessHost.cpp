@@ -17,29 +17,27 @@
 
 #ifdef SDL
 
-#include <stdio.h>
+#include <cstdio>
 #include <SDL.h>
-#include <cassert>
 
 #include "headless/SDLHeadlessHost.h"
+#include "Common/GPU/OpenGL/GLCommon.h"
+#include "Common/GPU/OpenGL/GLFeatures.h"
+#include "Common/GPU/thin3d_create.h"
+#include "Common/GPU/OpenGL/GLRenderManager.h"
 
-#include "Common/FileUtil.h"
+#include "Common/File/VFS/VFS.h"
+#include "Common/File/VFS/AssetReader.h"
+#include "Common/Log.h"
+#include "Common/File/FileUtil.h"
 #include "Common/GraphicsContext.h"
+#include "Common/TimeUtil.h"
 
 #include "Core/CoreParameter.h"
 #include "Core/ConfigValues.h"
 #include "Core/System.h"
 #include "GPU/Common/GPUDebugInterface.h"
 #include "GPU/GPUState.h"
-
-#include "base/logging.h"
-#include "base/timeutil.h"
-#include "gfx/gl_common.h"
-#include "gfx_es2/gpu_features.h"
-#include "file/vfs.h"
-#include "file/zip_read.h"
-#include "thin3d/thin3d_create.h"
-#include "thin3d/GLRenderManager.h"
 
 const bool WINDOW_VISIBLE = false;
 const int WINDOW_WIDTH = 480;
@@ -158,7 +156,7 @@ bool GLDummyGraphicsContext::InitFromRenderThread(std::string *errorMessage) {
 	renderManager_->SetInflightFrames(g_Config.iInflightFrames);
 	SetGPUBackend(GPUBackend::OPENGL);
 	bool success = draw_->CreatePresets();
-	assert(success);
+	_assert_(success);
 	renderManager_->SetSwapFunction([&]() {
 		SDL_GL_SwapWindow(screen_);
 	});

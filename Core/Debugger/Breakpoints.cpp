@@ -24,6 +24,7 @@
 #include "Core/Debugger/Breakpoints.h"
 #include "Core/Debugger/SymbolMap.h"
 #include "Core/Host.h"
+#include "Core/MemMap.h"
 #include "Core/MIPS/MIPSAnalyst.h"
 #include "Core/MIPS/MIPSDebugInterface.h"
 #include "Core/MIPS/JitCommon/JitCommon.h"
@@ -39,14 +40,15 @@ static std::mutex memCheckMutex_;
 std::vector<MemCheck> CBreakPoints::memChecks_;
 std::vector<MemCheck *> CBreakPoints::cleanupMemChecks_;
 
-void MemCheck::Log(u32 addr, bool write, int size, u32 pc) {
+void MemCheck::Log(u32 addr, bool write, int size, u32 pc, const char *reason) {
 	if (result & BREAK_ACTION_LOG) {
+		const char *type = write ? "Write" : "Read";
 		if (logFormat.empty()) {
-			NOTICE_LOG(MEMMAP, "CHK %s%i at %08x (%s), PC=%08x (%s)", write ? "Write" : "Read", size * 8, addr, g_symbolMap->GetDescription(addr).c_str(), pc, g_symbolMap->GetDescription(pc).c_str());
+			NOTICE_LOG(MEMMAP, "CHK %s%i(%s) at %08x (%s), PC=%08x (%s)", type, size * 8, reason, addr, g_symbolMap->GetDescription(addr).c_str(), pc, g_symbolMap->GetDescription(pc).c_str());
 		} else {
 			std::string formatted;
 			CBreakPoints::EvaluateLogFormat(currentDebugMIPS, logFormat, formatted);
-			NOTICE_LOG(MEMMAP, "CHK %s%i at %08x: %s", write ? "Write" : "Read", size * 8, addr, formatted.c_str());
+			NOTICE_LOG(MEMMAP, "CHK %s%i(%s) at %08x: %s", type, size * 8, reason, addr, formatted.c_str());
 		}
 	}
 }
@@ -61,10 +63,10 @@ BreakAction MemCheck::Apply(u32 addr, bool write, int size, u32 pc) {
 	return BREAK_ACTION_IGNORE;
 }
 
-BreakAction MemCheck::Action(u32 addr, bool write, int size, u32 pc) {
+BreakAction MemCheck::Action(u32 addr, bool write, int size, u32 pc, const char *reason) {
 	int mask = write ? MEMCHECK_WRITE : MEMCHECK_READ;
 	if (cond & mask) {
-		Log(addr, write, size, pc);
+		Log(addr, write, size, pc, reason);
 		if ((result & BREAK_ACTION_PAUSE) && coreState != CORE_POWERUP) {
 			Core_EnableStepping(true);
 			host->SetDebugMode(true);
@@ -93,7 +95,7 @@ void MemCheck::JitBeforeAction(u32 addr, bool write, int size, u32 pc) {
 		// We have to break to find out if it changed.
 		Core_EnableStepping(true);
 	} else {
-		Action(addr, write, size, pc);
+		Action(addr, write, size, pc, "CPU");
 	}
 }
 
@@ -115,7 +117,7 @@ void MemCheck::JitCleanup(bool changed)
 		return;
 
 	if (changed)
-		Log(lastAddr, true, lastSize, lastPC);
+		Log(lastAddr, true, lastSize, lastPC, "CPU");
 
 	// Resume if it should not have gone to stepping, or if it did not change.
 	if ((!(result & BREAK_ACTION_PAUSE) || !changed) && coreState == CORE_STEPPING)
@@ -503,7 +505,7 @@ MemCheck *CBreakPoints::GetMemCheckLocked(u32 address, int size) {
 	return 0;
 }
 
-BreakAction CBreakPoints::ExecMemCheck(u32 address, bool write, int size, u32 pc)
+BreakAction CBreakPoints::ExecMemCheck(u32 address, bool write, int size, u32 pc, const char *reason)
 {
 	if (!anyMemChecks_)
 		return BREAK_ACTION_IGNORE;
@@ -513,7 +515,7 @@ BreakAction CBreakPoints::ExecMemCheck(u32 address, bool write, int size, u32 pc
 		check->Apply(address, write, size, pc);
 		auto copy = *check;
 		guard.unlock();
-		return copy.Action(address, write, size, pc);
+		return copy.Action(address, write, size, pc, reason);
 	}
 	return BREAK_ACTION_IGNORE;
 }
@@ -546,7 +548,7 @@ BreakAction CBreakPoints::ExecOpMemCheck(u32 address, u32 pc)
 			check->Apply(address, write, size, pc);
 			auto copy = *check;
 			guard.unlock();
-			return copy.Action(address, write, size, pc);
+			return copy.Action(address, write, size, pc, "CPU");
 		}
 	}
 	return BREAK_ACTION_IGNORE;
@@ -689,17 +691,55 @@ bool CBreakPoints::EvaluateLogFormat(DebugInterface *cpu, const std::string &fmt
 		if (expression.empty()) {
 			result += "{}";
 		} else {
+			int type = 'x';
+			if (expression.length() > 2 && expression[expression.length() - 2] == ':') {
+				switch (expression[expression.length() - 1]) {
+				case 'd':
+				case 'f':
+				case 'p':
+				case 's':
+				case 'x':
+					type = expression[expression.length() - 1];
+					expression.resize(expression.length() - 2);
+					break;
+
+				default:
+					// Assume a ternary.
+					break;
+				}
+			}
+
 			if (!cpu->initExpression(expression.c_str(), exp)) {
 				return false;
 			}
 
-			u32 expResult;
-			char resultString[32];
-			if (!cpu->parseExpression(exp, expResult)) {
+			union {
+				int i;
+				u32 u;
+				float f;
+			} expResult;
+			char resultString[256];
+			if (!cpu->parseExpression(exp, expResult.u)) {
 				return false;
 			}
 
-			snprintf(resultString, 32, "%08x", expResult);
+			switch (type) {
+			case 'd':
+				snprintf(resultString, sizeof(resultString), "%d", expResult.i);
+				break;
+			case 'f':
+				snprintf(resultString, sizeof(resultString), "%f", expResult.f);
+				break;
+			case 'p':
+				snprintf(resultString, sizeof(resultString), "%08x[%08x]", expResult.u, Memory::IsValidAddress(expResult.u) ? Memory::Read_U32(expResult.u) : 0);
+				break;
+			case 's':
+				snprintf(resultString, sizeof(resultString) - 1, "%s", Memory::IsValidAddress(expResult.u) ? Memory::GetCharPointer(expResult.u) : "(invalid)");
+				break;
+			case 'x':
+				snprintf(resultString, sizeof(resultString), "%08x", expResult.u);
+				break;
+			}
 			result += resultString;
 		}
 

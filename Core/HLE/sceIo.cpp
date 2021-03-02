@@ -19,13 +19,17 @@
 #include <set>
 #include <thread>
 
-#include "thread/threadutil.h"
-#include "profiler/profiler.h"
+#include "Common/Thread/ThreadUtil.h"
+#include "Common/Profiler/Profiler.h"
 
+#include "Common/File/FileUtil.h"
+#include "Common/Serialize/SerializeFuncs.h"
+#include "Common/Serialize/SerializeMap.h"
+#include "Common/Serialize/SerializeSet.h"
 #include "Core/Core.h"
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
-#include "Core/Debugger/Breakpoints.h"
+#include "Core/Debugger/MemBlockInfo.h"
 #include "Core/ELF/ParamSFO.h"
 #include "Core/MemMapHelpers.h"
 #include "Core/System.h"
@@ -227,22 +231,22 @@ public:
 		if (!s)
 			return;
 
-		p.Do(fullpath);
-		p.Do(handle);
-		p.Do(callbackID);
-		p.Do(callbackArg);
-		p.Do(asyncResult);
-		p.Do(hasAsyncResult);
-		p.Do(pendingAsyncResult);
-		p.Do(sectorBlockMode);
-		p.Do(closePending);
-		p.Do(info);
-		p.Do(openMode);
+		Do(p, fullpath);
+		Do(p, handle);
+		Do(p, callbackID);
+		Do(p, callbackArg);
+		Do(p, asyncResult);
+		Do(p, hasAsyncResult);
+		Do(p, pendingAsyncResult);
+		Do(p, sectorBlockMode);
+		Do(p, closePending);
+		Do(p, info);
+		Do(p, openMode);
 
-		p.Do(npdrm);
-		p.Do(pgd_offset);
+		Do(p, npdrm);
+		Do(p, pgd_offset);
 		bool hasPGD = pgdInfo != NULL;
-		p.Do(hasPGD);
+		Do(p, hasPGD);
 		if (hasPGD) {
 			if (p.mode == p.MODE_READ) {
 				pgdInfo = (PGD_DESC*) malloc(sizeof(PGD_DESC));
@@ -253,11 +257,11 @@ public:
 			}
 		}
 
-		p.Do(waitingThreads);
+		Do(p, waitingThreads);
 		if (s >= 2) {
-			p.Do(waitingSyncThreads);
+			Do(p, waitingSyncThreads);
 		}
-		p.Do(pausedWaits);
+		Do(p, pausedWaits);
 	}
 
 	std::string fullpath;
@@ -617,8 +621,6 @@ static void __IoVblank() {
 }
 
 void __IoInit() {
-	MemoryStick_Init();
-
 	asyncNotifyEvent = CoreTiming::RegisterEvent("IoAsyncNotify", __IoAsyncNotify);
 	syncNotifyEvent = CoreTiming::RegisterEvent("IoSyncNotify", __IoSyncNotify);
 
@@ -659,6 +661,7 @@ void __IoInit() {
 
 	__KernelRegisterWaitTypeFuncs(WAITTYPE_ASYNCIO, __IoAsyncBeginCallback, __IoAsyncEndCallback);
 
+	MemoryStick_Init();
 	lastMemStickState = MemoryStick_State();
 	lastMemStickFatState = MemoryStick_FatState();
 	__DisplayListenVblank(__IoVblank);
@@ -670,10 +673,10 @@ void __IoDoState(PointerWrap &p) {
 		return;
 
 	ioManager.DoState(p);
-	p.DoArray(fds, ARRAY_SIZE(fds));
-	p.Do(asyncNotifyEvent);
+	DoArray(p, fds, ARRAY_SIZE(fds));
+	Do(p, asyncNotifyEvent);
 	CoreTiming::RestoreRegisterEvent(asyncNotifyEvent, "IoAsyncNotify", __IoAsyncNotify);
-	p.Do(syncNotifyEvent);
+	Do(p, syncNotifyEvent);
 	CoreTiming::RestoreRegisterEvent(syncNotifyEvent, "IoSyncNotify", __IoSyncNotify);
 	if (s < 2) {
 		std::set<SceUID> legacy;
@@ -681,22 +684,22 @@ void __IoDoState(PointerWrap &p) {
 		memStickFatCallbacks.clear();
 
 		// Convert from set to vector.
-		p.Do(legacy);
+		Do(p, legacy);
 		for (SceUID id : legacy) {
 			memStickCallbacks.push_back(id);
 		}
-		p.Do(legacy);
+		Do(p, legacy);
 		for (SceUID id : legacy) {
 			memStickFatCallbacks.push_back(id);
 		}
 	} else {
-		p.Do(memStickCallbacks);
-		p.Do(memStickFatCallbacks);
+		Do(p, memStickCallbacks);
+		Do(p, memStickFatCallbacks);
 	}
 
 	if (s >= 3) {
-		p.Do(lastMemStickState);
-		p.Do(lastMemStickFatState);
+		Do(p, lastMemStickState);
+		Do(p, lastMemStickFatState);
 	}
 
 	for (int i = 0; i < PSP_COUNT_FDS; ++i) {
@@ -710,11 +713,11 @@ void __IoDoState(PointerWrap &p) {
 		if (s >= 4) {
 			p.DoVoid(&asyncParams[i], (int)sizeof(IoAsyncParams));
 			bool hasThread = asyncThreads[i] != nullptr;
-			p.Do(hasThread);
+			Do(p, hasThread);
 			if (hasThread) {
 				if (p.GetMode() == p.MODE_READ)
 					clearThread();
-				p.DoClass(asyncThreads[i]);
+				DoClass(p, asyncThreads[i]);
 			} else if (!hasThread) {
 				clearThread();
 			}
@@ -726,7 +729,7 @@ void __IoDoState(PointerWrap &p) {
 	}
 
 	if (s >= 5) {
-		p.Do(asyncDefaultPriority);
+		Do(p, asyncDefaultPriority);
 	} else {
 		asyncDefaultPriority = -1;
 	}
@@ -963,6 +966,8 @@ static u32 npdrmRead(FileNode *f, u8 *data, int size) {
 	block  = pgd->file_offset/pgd->block_size;
 	offset = pgd->file_offset%pgd->block_size;
 
+	if (size > (int)pgd->data_size)
+		size = (int)pgd->data_size;
 	remain_size = size;
 
 	while(remain_size){
@@ -1021,11 +1026,12 @@ static bool __IoRead(int &result, int id, u32 data_addr, int size, int &us) {
 			result = SCE_KERNEL_ERROR_ILLEGAL_ADDR;
 			return true;
 		} else if (Memory::IsValidAddress(data_addr)) {
-			CBreakPoints::ExecMemCheck(data_addr, true, size, currentMIPS->pc);
-			u8 *data = (u8*) Memory::GetPointer(data_addr);
+			NotifyMemInfo(MemBlockFlags::WRITE, data_addr, size, "IoRead");
+			u8 *data = (u8 *)Memory::GetPointer(data_addr);
+			u32 validSize = Memory::ValidSize(data_addr, size);
 			if (f->npdrm) {
-				result = npdrmRead(f, data, size);
-				currentMIPS->InvalidateICache(data_addr, size);
+				result = npdrmRead(f, data, validSize);
+				currentMIPS->InvalidateICache(data_addr, validSize);
 				return true;
 			}
 
@@ -1041,17 +1047,17 @@ static bool __IoRead(int &result, int id, u32 data_addr, int size, int &us) {
 				AsyncIOEvent ev = IO_EVENT_READ;
 				ev.handle = f->handle;
 				ev.buf = data;
-				ev.bytes = size;
+				ev.bytes = validSize;
 				ev.invalidateAddr = data_addr;
 				ioManager.ScheduleOperation(ev);
 				return false;
 			} else {
 				if (GetIOTimingMethod() != IOTIMING_REALISTIC) {
-					result = (int) pspFileSystem.ReadFile(f->handle, data, size);
+					result = (int)pspFileSystem.ReadFile(f->handle, data, validSize);
 				} else {
-					result = (int) pspFileSystem.ReadFile(f->handle, data, size, us);
+					result = (int)pspFileSystem.ReadFile(f->handle, data, validSize, us);
 				}
-				currentMIPS->InvalidateICache(data_addr, size);
+				currentMIPS->InvalidateICache(data_addr, validSize);
 				return true;
 			}
 		} else {
@@ -1131,12 +1137,13 @@ static bool __IoWrite(int &result, int id, u32 data_addr, int size, int &us) {
 	}
 
 	const void *data_ptr = Memory::GetPointer(data_addr);
+	const u32 validSize = Memory::ValidSize(data_addr, size);
 	// Let's handle stdout/stderr specially.
 	if (id == PSP_STDOUT || id == PSP_STDERR) {
 		const char *str = (const char *) data_ptr;
-		const int str_size = size == 0 ? 0 : (str[size - 1] == '\n' ? size - 1 : size);
+		const int str_size = size <= 0 ? 0 : (str[validSize - 1] == '\n' ? validSize - 1 : validSize);
 		INFO_LOG(SCEIO, "%s: %.*s", id == 1 ? "stdout" : "stderr", str_size, str);
-		result = size;
+		result = validSize;
 		return true;
 	}
 	u32 error;
@@ -1155,7 +1162,7 @@ static bool __IoWrite(int &result, int id, u32 data_addr, int size, int &us) {
 			return true;
 		}
 
-		CBreakPoints::ExecMemCheck(data_addr, false, size, currentMIPS->pc);
+		NotifyMemInfo(MemBlockFlags::READ, data_addr, size, "IoWrite");
 
 		bool useThread = __KernelIsDispatchEnabled() && ioManagerThreadEnabled && size > IO_THREAD_MIN_DATA_SIZE;
 		if (useThread) {
@@ -1169,15 +1176,15 @@ static bool __IoWrite(int &result, int id, u32 data_addr, int size, int &us) {
 			AsyncIOEvent ev = IO_EVENT_WRITE;
 			ev.handle = f->handle;
 			ev.buf = (u8 *) data_ptr;
-			ev.bytes = size;
+			ev.bytes = validSize;
 			ev.invalidateAddr = 0;
 			ioManager.ScheduleOperation(ev);
 			return false;
 		} else {
 			if (GetIOTimingMethod() != IOTIMING_REALISTIC) {
-				result = (int) pspFileSystem.WriteFile(f->handle, (u8 *) data_ptr, size);
+				result = (int)pspFileSystem.WriteFile(f->handle, (u8 *) data_ptr, validSize);
 			} else {
-				result = (int) pspFileSystem.WriteFile(f->handle, (u8 *) data_ptr, size, us);
+				result = (int)pspFileSystem.WriteFile(f->handle, (u8 *) data_ptr, validSize, us);
 			}
 		}
 		return true;
@@ -1479,7 +1486,7 @@ static u32 sceIoOpen(const char *filename, int flags, int mode) {
 	int error;
 	FileNode *f = __IoOpen(error, filename, flags, mode);
 	if (!f) {
-		assert(error != 0);
+		_assert_(error != 0);
 		if (error == (int)SCE_KERNEL_ERROR_NOCWD) {
 			// TODO: Timing is not accurate.
 			return hleLogError(SCEIO, hleDelayResult(error, "file opened", 10000), "no current working directory");
@@ -2012,20 +2019,22 @@ static int sceIoChangeAsyncPriority(int id, int priority) {
 	return hleLogSuccessI(SCEIO, 0);
 }
 
-static int sceIoCloseAsync(int id)
-{
+static int sceIoCloseAsync(int id) {
 	u32 error;
 	FileNode *f = __IoGetFd(id, error);
-	if (f) {
-		f->closePending = true;
-
-		auto &params = asyncParams[id];
-		params.op = IoAsyncOp::CLOSE;
-		IoStartAsyncThread(id, f);
-		return hleLogSuccessI(SCEIO, 0);
-	} else {
+	if (!f) {
 		return hleLogError(SCEIO, error, "bad file descriptor");
 	}
+	if (f->asyncBusy()) {
+		return hleLogWarning(SCEIO, SCE_KERNEL_ERROR_ASYNC_BUSY, "async busy");
+	}
+
+	f->closePending = true;
+
+	auto &params = asyncParams[id];
+	params.op = IoAsyncOp::CLOSE;
+	IoStartAsyncThread(id, f);
+	return hleLogSuccessI(SCEIO, 0);
 }
 
 static u32 sceIoSetAsyncCallback(int id, u32 clbckId, u32 clbckArg)
@@ -2059,7 +2068,7 @@ static u32 sceIoOpenAsync(const char *filename, int flags, int mode) {
 
 	// We have to return an fd here, which may have been destroyed when we reach Wait if it failed.
 	if (f == nullptr) {
-		assert(error != 0);
+		_assert_(error != 0);
 		if (error == SCE_KERNEL_ERROR_NODEV)
 			return hleLogError(SCEIO, error, "device not found");
 
@@ -2244,12 +2253,12 @@ public:
 		if (!s)
 			return;
 
-		p.Do(name);
-		p.Do(index);
+		Do(p, name);
+		Do(p, index);
 
 		// TODO: Is this the right way for it to wake up?
 		int count = (int) listing.size();
-		p.Do(count);
+		Do(p, count);
 		listing.resize(count);
 		for (int i = 0; i < count; ++i) {
 			listing[i].DoState(p);
@@ -2461,9 +2470,9 @@ static int __IoIoctl(u32 id, u32 cmd, u32 indataPtr, u32 inlen, u32 outdataPtr, 
 		// Even if the size is 4, it still actually reads a 16 byte struct, it seems.
 		if (Memory::IsValidAddress(indataPtr) && inlen >= 4) {
 			struct SeekInfo {
-				u64 offset;
-				u32 unk;
-				u32 whence;
+				u64_le offset;
+				u32_le unk;
+				u32_le whence;
 			};
 			const auto seekInfo = PSPPointer<SeekInfo>::Create(indataPtr);
 			FileMove seek;
@@ -2565,9 +2574,9 @@ static int __IoIoctl(u32 id, u32 cmd, u32 indataPtr, u32 inlen, u32 outdataPtr, 
 
 		if (Memory::IsValidAddress(indataPtr) && inlen >= 4) {
 			struct SeekInfo {
-				u64 offset;
-				u32 unk;
-				u32 whence;
+				u64_le offset;
+				u32_le unk;
+				u32_le whence;
 			};
 			const auto seekInfo = PSPPointer<SeekInfo>::Create(indataPtr);
 			FileMove seek;

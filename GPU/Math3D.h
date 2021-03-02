@@ -21,7 +21,7 @@
 
 #include "Common/Common.h"
 #include "Core/Util/AudioFormat.h"  // for clamp_u8
-#include "math/fast/fast_matrix.h"
+#include "Common/Math/fast/fast_matrix.h"
 
 #if defined(_M_SSE)
 #include <emmintrin.h>
@@ -297,7 +297,9 @@ public:
 	Vec3 WithLength(const float l) const;
 	float Distance2To(Vec3 &other);
 	Vec3 Normalized(bool useSSE4 = false) const;
+	Vec3 NormalizedOr001(bool useSSE4 = false) const;
 	float Normalize(); // returns the previous length, which is often useful
+	float NormalizeOr001();
 
 	T& operator [] (int i) //allow vector[2] = 3   (vector.z=3)
 	{

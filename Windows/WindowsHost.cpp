@@ -20,7 +20,7 @@
 #include <algorithm>
 
 // For shell links
-#include "windows.h"
+#include "Common/CommonWindows.h"
 #include "winnls.h"
 #include "shobjidl.h"
 #include "objbase.h"
@@ -32,14 +32,14 @@
 #pragma warning(pop)
 
 // native stuff
-#include "base/display.h"
-#include "base/NativeApp.h"
-#include "file/file_util.h"
-#include "input/input_state.h"
-#include "input/keycodes.h"
-#include "util/text/utf8.h"
-
+#include "Common/System/Display.h"
+#include "Common/System/NativeApp.h"
+#include "Common/Input/InputState.h"
+#include "Common/Input/KeyCodes.h"
+#include "Common/Data/Encoding/Utf8.h"
+#include "Common/File/DirListing.h"
 #include "Common/StringUtils.h"
+
 #include "Core/Core.h"
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
@@ -72,8 +72,6 @@
 #include "Windows/main.h"
 #include "UI/OnScreenDisplay.h"
 
-static const int numCPUs = 1;
-
 float g_mouseDeltaX = 0;
 float g_mouseDeltaY = 0;
 
@@ -83,8 +81,8 @@ static BOOL PostDialogMessage(Dialog *dialog, UINT message, WPARAM wParam = 0, L
 
 WindowsHost::WindowsHost(HINSTANCE hInstance, HWND mainWindow, HWND displayWindow)
 	: hInstance_(hInstance),
-		mainWindow_(mainWindow),
-		displayWindow_(displayWindow)
+		displayWindow_(displayWindow),
+		mainWindow_(mainWindow)
 {
 	g_mouseDeltaX = 0;
 	g_mouseDeltaY = 0;
@@ -170,9 +168,7 @@ void WindowsHost::SetWindowTitle(const char *message) {
 #ifdef _DEBUG
 	winTitle.append(L" (debug)");
 #endif
-	if (PPSSPP_ID >= 1) {
-		winTitle.append(ConvertUTF8ToWString(StringFromFormat(" (instance: %d)", (int)PPSSPP_ID)));
-	}
+	lastTitle_ = winTitle;
 
 	MainWindow::SetWindowTitle(winTitle.c_str());
 	PostMessage(mainWindow_, MainWindow::WM_USER_WINDOW_TITLE_CHANGED, 0, 0);
@@ -194,24 +190,27 @@ void WindowsHost::ShutdownSound() {
 
 void WindowsHost::UpdateUI() {
 	PostMessage(mainWindow_, MainWindow::WM_USER_UPDATE_UI, 0, 0);
+
+	int peers = GetInstancePeerCount();
+	if (PPSSPP_ID >= 1 && peers != lastNumInstances_) {
+		lastNumInstances_ = peers;
+		PostMessage(mainWindow_, MainWindow::WM_USER_WINDOW_TITLE_CHANGED, 0, 0);
+	}
 }
 
 void WindowsHost::UpdateMemView() {
-	for (int i = 0; i < numCPUs; i++)
-		if (memoryWindow[i])
-			PostDialogMessage(memoryWindow[i], WM_DEB_UPDATE);
+	if (memoryWindow)
+		PostDialogMessage(memoryWindow, WM_DEB_UPDATE);
 }
 
 void WindowsHost::UpdateDisassembly() {
-	for (int i = 0; i < numCPUs; i++)
-		if (disasmWindow[i])
-			PostDialogMessage(disasmWindow[i], WM_DEB_UPDATE);
+	if (disasmWindow)
+		PostDialogMessage(disasmWindow, WM_DEB_UPDATE);
 }
 
 void WindowsHost::SetDebugMode(bool mode) {
-	for (int i = 0; i < numCPUs; i++)
-		if (disasmWindow[i])
-			PostDialogMessage(disasmWindow[i], WM_DEB_SETDEBUGLPARAM, 0, (LPARAM)mode);
+	if (disasmWindow)
+		PostDialogMessage(disasmWindow, WM_DEB_SETDEBUGLPARAM, 0, (LPARAM)mode);
 }
 
 void WindowsHost::PollControllers() {
@@ -262,7 +261,8 @@ void WindowsHost::PollControllers() {
 }
 
 void WindowsHost::BootDone() {
-	g_symbolMap->SortSymbols();
+	if (g_symbolMap)
+		g_symbolMap->SortSymbols();
 	PostMessage(mainWindow_, WM_USER + 1, 0, 0);
 
 	SetDebugMode(!g_Config.bAutoRun);
@@ -296,6 +296,8 @@ static std::string SymbolMapFilename(const char *currentFilename, const char* ex
 }
 
 bool WindowsHost::AttemptLoadSymbolMap() {
+	if (!g_symbolMap)
+		return false;
 	bool result1 = g_symbolMap->LoadSymbolMap(SymbolMapFilename(PSP_CoreParameter().fileToStart.c_str(),".ppmap").c_str());
 	// Load the old-style map file.
 	if (!result1)
@@ -305,7 +307,14 @@ bool WindowsHost::AttemptLoadSymbolMap() {
 }
 
 void WindowsHost::SaveSymbolMap() {
-	g_symbolMap->SaveSymbolMap(SymbolMapFilename(PSP_CoreParameter().fileToStart.c_str(),".ppmap").c_str());
+	if (g_symbolMap)
+		g_symbolMap->SaveSymbolMap(SymbolMapFilename(PSP_CoreParameter().fileToStart.c_str(),".ppmap").c_str());
+}
+
+void WindowsHost::NotifySymbolMapUpdated() {
+	if (g_symbolMap)
+		g_symbolMap->SortSymbols();
+	PostMessage(mainWindow_, WM_USER + 1, 0, 0);
 }
 
 bool WindowsHost::IsDebuggingEnabled() {
@@ -402,4 +411,8 @@ void WindowsHost::NotifyUserMessage(const std::string &message, float duration, 
 
 void WindowsHost::SendUIMessage(const std::string &message, const std::string &value) {
 	NativeMessageReceived(message.c_str(), value.c_str());
+}
+
+void WindowsHost::NotifySwitchUMDUpdated() {
+	PostMessage(mainWindow_, MainWindow::WM_USER_SWITCHUMD_UPDATED, 0, 0);
 }

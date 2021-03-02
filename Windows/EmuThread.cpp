@@ -2,15 +2,17 @@
 #include <atomic>
 #include <thread>
 
-#include "base/timeutil.h"
-#include "base/NativeApp.h"
-#include "i18n/i18n.h"
-#include "input/input_state.h"
-#include "util/text/utf8.h"
-
+#include "Common/System/NativeApp.h"
+#include "Common/System/System.h"
+#include "Common/Data/Text/I18n.h"
+#include "Common/Input/InputState.h"
+#include "Common/Data/Encoding/Utf8.h"
 #include "Common/Log.h"
 #include "Common/StringUtils.h"
 #include "Common/GraphicsContext.h"
+#include "Common/TimeUtil.h"
+#include "Common/Thread/ThreadUtil.h"
+
 #include "Windows/EmuThread.h"
 #include "Windows/W32Util/Misc.h"
 #include "Windows/MainWindow.h"
@@ -23,7 +25,6 @@
 #include "Core/System.h"
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
-#include "thread/threadutil.h"
 
 enum class EmuThreadState {
 	DISABLED,
@@ -104,7 +105,7 @@ static void EmuThreadStop() {
 static void EmuThreadJoin() {
 	emuThread.join();
 	emuThread = std::thread();
-	ILOG("EmuThreadJoin - joined");
+	INFO_LOG(SYSTEM, "EmuThreadJoin - joined");
 }
 
 void MainThreadFunc() {
@@ -201,7 +202,7 @@ void MainThreadFunc() {
 		std::string full_error = StringFromFormat("%s\n\n%s", genericError, error_string.c_str());
 		std::wstring title = ConvertUTF8ToWString(err->T("GenericGraphicsError", "Graphics Error"));
 		bool yes = IDYES == MessageBox(0, ConvertUTF8ToWString(full_error).c_str(), title.c_str(), MB_ICONERROR | MB_YESNO);
-		ERROR_LOG(BOOT, full_error.c_str());
+		ERROR_LOG(BOOT, "%s", full_error.c_str());
 
 		if (yes) {
 			// Change the config to the alternative and restart.
@@ -230,7 +231,6 @@ void MainThreadFunc() {
 	}
 
 	INFO_LOG(BOOT, "Done.");
-	_dbg_update_();
 
 	if (coreState == CORE_POWERDOWN) {
 		INFO_LOG(BOOT, "Exit before core loop.");

@@ -18,8 +18,10 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
-#include "i18n/i18n.h"
-#include "Common/FileUtil.h"
+
+#include "Common/Data/Text/I18n.h"
+#include "Common/File/FileUtil.h"
+#include "Common/Log.h"
 #include "Common/Swap.h"
 #include "Core/Loaders.h"
 #include "Core/Host.h"
@@ -48,11 +50,13 @@ BlockDevice *constructBlockDevice(FileLoader *fileLoader) {
 		return new FileBlockDevice(fileLoader);
 }
 
-u32 BlockDevice::CalculateCRC() {
+u32 BlockDevice::CalculateCRC(volatile bool *cancel) {
 	u32 crc = crc32(0, Z_NULL, 0);
 
 	u8 block[2048];
 	for (u32 i = 0; i < GetNumBlocks(); ++i) {
+		if (cancel && *cancel)
+			return 0;
 		if (!ReadBlock(i, block, true)) {
 			ERROR_LOG(FILESYS, "Failed to read block for CRC");
 			return 0;

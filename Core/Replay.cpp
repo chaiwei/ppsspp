@@ -15,11 +15,20 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#ifdef __MINGW32__
+#include <unistd.h>
+#ifndef _POSIX_THREAD_SAFE_FUNCTIONS
+#define _POSIX_THREAD_SAFE_FUNCTIONS 200112L
+#endif
+#endif
+
 #include <cstring>
 #include <ctime>
 #include <vector>
+
 #include "Common/Common.h"
-#include "Common/FileUtil.h"
+#include "Common/Log.h"
+#include "Common/File/FileUtil.h"
 #include "Common/StringUtils.h"
 #include "Core/Replay.h"
 #include "Core/FileSystems/FileSystem.h"

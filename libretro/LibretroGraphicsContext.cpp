@@ -1,6 +1,7 @@
 
 #include "libretro/LibretroGraphicsContext.h"
 #include "libretro/LibretroGLContext.h"
+#include "libretro/LibretroGLCoreContext.h"
 #include "libretro/libretro.h"
 #include "libretro/LibretroVulkanContext.h"
 #ifdef _WIN32
@@ -51,7 +52,7 @@ void LibretroHWRenderContext::ContextReset() {
 	if (!draw_) {
 		CreateDrawContext();
 		bool success = draw_->CreatePresets();
-		assert(success);
+		_assert_(success);
 	}
 
 	GotBackbuffer();
@@ -88,44 +89,58 @@ void LibretroGraphicsContext::LostBackbuffer() { draw_->HandleEvent(Draw::Event:
 LibretroGraphicsContext *LibretroGraphicsContext::CreateGraphicsContext() {
 	LibretroGraphicsContext *ctx;
 
-	ctx = new LibretroGLContext();
+	retro_hw_context_type preferred;
+	if (!Libretro::environ_cb(RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER, &preferred))
+		preferred = RETRO_HW_CONTEXT_DUMMY;
 
-	if (ctx->Init()) {
-		return ctx;
+#ifndef USING_GLES2
+	if (preferred == RETRO_HW_CONTEXT_DUMMY || preferred == RETRO_HW_CONTEXT_OPENGL_CORE) {
+		ctx = new LibretroGLCoreContext();
+
+		if (ctx->Init()) {
+			return ctx;
+		}
+		delete ctx;
 	}
-	delete ctx;
+#endif
 
-	ctx = new LibretroVulkanContext();
+	if (preferred == RETRO_HW_CONTEXT_DUMMY || preferred == RETRO_HW_CONTEXT_OPENGL) {
+		ctx = new LibretroGLContext();
 
-	if (ctx->Init()) {
-		return ctx;
+		if (ctx->Init()) {
+			return ctx;
+		}
+		delete ctx;
 	}
-	delete ctx;
+
+	if (preferred == RETRO_HW_CONTEXT_DUMMY || preferred == RETRO_HW_CONTEXT_VULKAN) {
+		ctx = new LibretroVulkanContext();
+
+		if (ctx->Init()) {
+			return ctx;
+		}
+		delete ctx;
+	}
 
 #ifdef _WIN32
-	ctx = new LibretroD3D11Context();
+	if (preferred == RETRO_HW_CONTEXT_DUMMY || preferred == RETRO_HW_CONTEXT_DIRECT3D) {
+		ctx = new LibretroD3D11Context();
 
-	if (ctx->Init()) {
-		return ctx;
+		if (ctx->Init()) {
+			return ctx;
+		}
+		delete ctx;
+
+		ctx = new LibretroD3D9Context();
+
+		if (ctx->Init()) {
+			return ctx;
+		}
+		delete ctx;
 	}
-	delete ctx;
-
-	ctx = new LibretroD3D9Context();
-
-	if (ctx->Init()) {
-		return ctx;
-	}
-	delete ctx;
 #endif
 
-#if 1
 	ctx = new LibretroSoftwareContext();
-
-	if (ctx->Init()) {
-		return ctx;
-	}
-	delete ctx;
-#endif
-
-	return new LibretroNullContext();
+   ctx->Init();
+   return ctx;
 }

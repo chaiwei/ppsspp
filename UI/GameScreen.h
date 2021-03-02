@@ -20,7 +20,7 @@
 #include <functional>
 
 #include "UI/MiscScreens.h"
-#include "ui/ui_screen.h"
+#include "Common/UI/UIScreen.h"
 
 // Game screen: Allows you to start a game, delete saves, delete the game,
 // set game specific settings, etc.
@@ -67,6 +67,7 @@ private:
 	UI::TextView *tvSaveDataSize_;
 	UI::TextView *tvInstallDataSize_;
 	UI::TextView *tvRegion_;
+	UI::TextView *tvCRC_;
 
 	UI::Choice *btnGameSettings_;
 	UI::Choice *btnCreateGameConfig_;

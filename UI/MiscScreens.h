@@ -22,8 +22,8 @@
 #include <string>
 #include <vector>
 
-#include "file/file_util.h"
-#include "ui/ui_screen.h"
+#include "Common/UI/UIScreen.h"
+#include "Common/File/DirListing.h"
 
 struct ShaderInfo;
 struct TextureShaderInfo;
@@ -105,12 +105,13 @@ private:
 
 class PostProcScreen : public ListPopupScreen {
 public:
-	PostProcScreen(const std::string &title);
+	PostProcScreen(const std::string &title, int id);
 
 private:
 	void OnCompleted(DialogResult result) override;
 	bool ShowButtons() const override { return true; }
 	std::vector<ShaderInfo> shaders_;
+	int id_;
 };
 
 class TextureShaderScreen : public ListPopupScreen {
@@ -125,8 +126,7 @@ private:
 
 class LogoScreen : public UIScreen {
 public:
-	LogoScreen(bool gotoGameSettings = false)
-		: gotoGameSettings_(gotoGameSettings) {}
+	LogoScreen(bool gotoGameSettings = false);
 	bool key(const KeyInput &key) override;
 	bool touch(const TouchInput &touch) override;
 	void update() override;
@@ -137,13 +137,14 @@ public:
 private:
 	void Next();
 	int frames_ = 0;
+	double sinceStart_ = 0.0;
 	bool switched_ = false;
 	bool gotoGameSettings_ = false;
 };
 
 class CreditsScreen : public UIDialogScreenWithBackground {
 public:
-	CreditsScreen() : frames_(0) {}
+	CreditsScreen();
 	void update() override;
 	void render() override;
 
@@ -160,5 +161,5 @@ private:
 	UI::EventReturn OnShare(UI::EventParams &e);
 	UI::EventReturn OnTwitter(UI::EventParams &e);
 
-	int frames_;
+	double startTime_ = 0.0;
 };

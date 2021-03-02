@@ -1,17 +1,15 @@
-#include "base/display.h"
+#include <algorithm>
+#include <tchar.h>
+#include "Common/System/Display.h"
 #include "Windows/GEDebugger/CtrlDisplayListView.h"
 #include "Windows/GEDebugger/GEDebugger.h"
 #include "Windows/InputBox.h"
-#include "Windows/Main.h"
+#include "Windows/main.h"
 #include "Core/Config.h"
 #include "GPU/Debugger/Breakpoints.h"
 #include "GPU/GPUState.h"
 
-#include <algorithm>
-
-static const int numCPUs = 1;
-
-const PTCHAR CtrlDisplayListView::windowClass = _T("CtrlDisplayListView");
+LPCTSTR CtrlDisplayListView::windowClass = _T("CtrlDisplayListView");
 
 const int POPUP_SUBMENU_ID_DISPLAYLISTVIEW = 8;
 extern HMENU g_hPopupMenus;
@@ -190,7 +188,6 @@ void CtrlDisplayListView::onPaint(WPARAM wParam, LPARAM lParam)
 		bool stall = address == list.stall;
 
 		int rowY1 = rowHeight*i;
-		int rowY2 = rowHeight*(i+1);
 
 		// draw background
 		COLORREF backgroundColor = stall ? 0xCCCCFF : 0xFFFFFF;
@@ -272,7 +269,6 @@ void CtrlDisplayListView::toggleBreakpoint()
 
 void CtrlDisplayListView::onMouseDown(WPARAM wParam, LPARAM lParam, int button)
 {
-	int x = LOWORD(lParam);
 	int y = HIWORD(lParam);
 
 	int line = y/rowHeight;
@@ -308,9 +304,8 @@ void CtrlDisplayListView::onMouseUp(WPARAM wParam, LPARAM lParam, int button)
 		switch(TrackPopupMenuEx(GetSubMenu(g_hPopupMenus,POPUP_SUBMENU_ID_DISPLAYLISTVIEW),TPM_RIGHTBUTTON|TPM_RETURNCMD,pt.x,pt.y,wnd,0))
 		{
 		case ID_DISASM_GOTOINMEMORYVIEW:
-			for (int i=0; i<numCPUs; i++)
-				if (memoryWindow[i])
-					memoryWindow[i]->Goto(curAddress);
+			if (memoryWindow)
+				memoryWindow->Goto(curAddress);
 			break;
 		case ID_DISASM_TOGGLEBREAKPOINT:
 			toggleBreakpoint();

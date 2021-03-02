@@ -5,8 +5,10 @@
 #pragma once
 
 #include <cstddef>
-#include "Common.h"
-#include "MemoryUtil.h"
+
+#include "Common/CommonTypes.h"
+#include "Common/Log.h"
+#include "Common/MemoryUtil.h"
 
 // Everything that needs to generate code should inherit from this.
 // You get memory management for free, plus, you can use all emitter functions without
@@ -69,6 +71,9 @@ public:
 	// Always clear code space with breakpoints, so that if someone accidentally executes
 	// uninitialized, it just breaks into the debugger.
 	void ClearCodeSpace(int offset) {
+		if (!region) {
+			return;
+		}
 		if (PlatformIsWXExclusive()) {
 			ProtectMemoryPages(region, region_size, MEM_PROT_READ | MEM_PROT_WRITE);
 		}

@@ -9,9 +9,34 @@
 #include <SLES/OpenSLES.h>
 #include <SLES/OpenSLES_Android.h>
 
-#include "base/logging.h"
 #include "Common/Log.h"
 #include "OpenSLContext.h"
+#include "Core/HLE/sceUsbMic.h"
+
+void OpenSLContext::bqRecorderCallback(SLAndroidSimpleBufferQueueItf bq, void *context) {
+	OpenSLContext *ctx = (OpenSLContext *)context;
+	SLresult result;
+
+	SLuint32 recordsState;
+	result = (*ctx->recorderRecord)->GetRecordState(ctx->recorderRecord, &recordsState);
+	if(result != SL_RESULT_SUCCESS) {
+		ERROR_LOG(AUDIO, "GetRecordState error: %d", result);
+		return;
+	}
+
+	Microphone::addAudioData((uint8_t*) ctx->recordBuffer[ctx->activeRecordBuffer], ctx->recordBufferSize);
+
+	if (recordsState == SL_RECORDSTATE_RECORDING) {
+		result = (*ctx->recorderBufferQueue)->Enqueue(ctx->recorderBufferQueue, ctx->recordBuffer[ctx->activeRecordBuffer], ctx->recordBufferSize);
+		if (result != SL_RESULT_SUCCESS) {
+			ERROR_LOG(AUDIO, "Enqueue error: %d", result);
+		}
+	}
+
+	ctx->activeRecordBuffer += 1; // Switch buffer
+	if (ctx->activeRecordBuffer == NUM_BUFFERS)
+		ctx->activeRecordBuffer = 0;
+}
 
 // This callback handler is called every time a buffer finishes playing.
 // The documentation available is very unclear about how to best manage buffers.
@@ -24,7 +49,7 @@ void OpenSLContext::bqPlayerCallbackWrap(SLAndroidSimpleBufferQueueItf bq, void 
 
 void OpenSLContext::BqPlayerCallback(SLAndroidSimpleBufferQueueItf bq) {
 	if (bq != bqPlayerBufferQueue) {
-		ELOG("OpenSL: Wrong bq!");
+		ERROR_LOG(AUDIO, "OpenSL: Wrong bq!");
 		return;
 	}
 
@@ -41,7 +66,7 @@ void OpenSLContext::BqPlayerCallback(SLAndroidSimpleBufferQueueItf bq) {
 	// the most likely other result is SL_RESULT_BUFFER_INSUFFICIENT,
 	// which for this code example would indicate a programming error
 	if (result != SL_RESULT_SUCCESS) {
-		ELOG("OpenSL: Failed to enqueue! %i %i", renderedFrames, sizeInBytes);
+		ERROR_LOG(AUDIO, "OpenSL: Failed to enqueue! %i %i", renderedFrames, sizeInBytes);
 	}
 
 	curBuffer += 1; // Switch buffer
@@ -58,7 +83,7 @@ bool OpenSLContext::Init() {
 	// create engine
 	result = slCreateEngine(&engineObject, 0, NULL, 0, NULL, NULL);
 	if (result != SL_RESULT_SUCCESS) {
-		ELOG("OpenSL: Failed to create the engine: %d", (int)result);
+		ERROR_LOG(AUDIO, "OpenSL: Failed to create the engine: %d", (int)result);
 		engineObject = nullptr;
 		return false;
 	}
@@ -70,7 +95,7 @@ bool OpenSLContext::Init() {
 
 	result = (*engineEngine)->CreateOutputMix(engineEngine, &outputMixObject, 0, 0, 0);
 	if (result != SL_RESULT_SUCCESS) {
-		ELOG("OpenSL: Failed to create output mix: %d", (int)result);
+		ERROR_LOG(AUDIO, "OpenSL: Failed to create output mix: %d", (int)result);
 		(*engineObject)->Destroy(engineObject);
 		engineEngine = nullptr;
 		engineObject = nullptr;
@@ -102,9 +127,10 @@ bool OpenSLContext::Init() {
 	// create audio player
 	const SLInterfaceID ids[2] = {SL_IID_BUFFERQUEUE, SL_IID_VOLUME};
 	const SLboolean req[2] = {SL_BOOLEAN_TRUE, SL_BOOLEAN_TRUE};
-	result = (*engineEngine)->CreateAudioPlayer(engineEngine, &bqPlayerObject, &audioSrc, &audioSnk, 2, ids, req);
+	result = (*engineEngine)->CreateAudioPlayer(engineEngine, &bqPlayerObject, &audioSrc, &audioSnk,
+			sizeof(ids)/sizeof(ids[0]), ids, req);
 	if (result != SL_RESULT_SUCCESS) {
-		ELOG("OpenSL: CreateAudioPlayer failed: %d", (int)result);
+		ERROR_LOG(AUDIO, "OpenSL: CreateAudioPlayer failed: %d", (int)result);
 		(*outputMixObject)->Destroy(outputMixObject);
 		outputMixObject = nullptr;
 
@@ -146,18 +172,114 @@ bool OpenSLContext::Init() {
 	return true;
 }
 
-// shut down the native audio system
-OpenSLContext::~OpenSLContext() {
-	if (bqPlayerPlay) {
-		ILOG("OpenSL: Shutdown - stopping playback");
-		SLresult result;
-		result = (*bqPlayerPlay)->SetPlayState(bqPlayerPlay, SL_PLAYSTATE_STOPPED);
+int OpenSLContext::AudioRecord_Start(int sampleRate) {
+	SLresult result;
+
+	// configure audio source
+	SLDataLocator_IODevice loc_dev = {SL_DATALOCATOR_IODEVICE, SL_IODEVICE_AUDIOINPUT, SL_DEFAULTDEVICEID_AUDIOINPUT, NULL};
+	SLDataSource audioSrc = {&loc_dev, NULL};
+
+	// configure audio sink
+	SLDataLocator_AndroidSimpleBufferQueue loc_bq = {SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE, 2};
+	SLDataFormat_PCM format_pcm = {
+			SL_DATAFORMAT_PCM,
+			1,
+			(SLuint32) sampleRate * 1000, // The constants such as SL_SAMPLINGRATE_44_1 are 44100000
+			SL_PCMSAMPLEFORMAT_FIXED_16,
+			SL_PCMSAMPLEFORMAT_FIXED_16,
+			SL_SPEAKER_FRONT_CENTER,
+			SL_BYTEORDER_LITTLEENDIAN
+	};
+	SLDataSink audioSnk = {&loc_bq, &format_pcm};
+
+	// create audio recorder
+	const SLInterfaceID id[1] = {SL_IID_ANDROIDSIMPLEBUFFERQUEUE};
+	const SLboolean req[1] = {SL_BOOLEAN_TRUE};
+	result = (*engineEngine)->CreateAudioRecorder(engineEngine, &recorderObject, &audioSrc, &audioSnk,
+			sizeof(id)/sizeof(id[0]), id, req);
+	if (SL_RESULT_SUCCESS != result) {
+		ERROR_LOG(AUDIO, "CreateAudioRecorder failed: %d", result);
+		return false;
+	}
+
+	// realize the audio recorder
+	result = (*recorderObject)->Realize(recorderObject, SL_BOOLEAN_FALSE);
+	if (SL_RESULT_SUCCESS != result) {
+		ERROR_LOG(AUDIO, "Realize failed: %d", result);
+		return false;
+	}
+
+	// get the record interface
+	result = (*recorderObject)->GetInterface(recorderObject, SL_IID_RECORD, &recorderRecord);
+	if (SL_RESULT_SUCCESS != result) {
+		ERROR_LOG(AUDIO, "GetInterface(record) failed: %d", result);
+		return false;
+	}
+
+	// get the buffer queue interface
+	result = (*recorderObject)->GetInterface(recorderObject, SL_IID_ANDROIDSIMPLEBUFFERQUEUE, (void*) &recorderBufferQueue);
+	if (SL_RESULT_SUCCESS != result) {
+		ERROR_LOG(AUDIO, "GetInterface(queue interface) failed: %d", result);
+		return false;
+	}
+
+	// register callback on the buffer queue
+	result = (*recorderBufferQueue)->RegisterCallback(recorderBufferQueue, &bqRecorderCallback, this);
+	if (SL_RESULT_SUCCESS != result) {
+		ERROR_LOG(AUDIO, "RegisterCallback failed: %d", result);
+		return false;
+	}
+
+	recordBufferSize = (44100 * 20 / 1000 * 2);
+	for (int i = 0; i < NUM_BUFFERS; i++) {
+		recordBuffer[i] = new short[recordBufferSize];
+	}
+	for (int i = 0; i < NUM_BUFFERS; i++) {
+		result = (*recorderBufferQueue)->Enqueue(recorderBufferQueue, recordBuffer[i], recordBufferSize);
 		if (SL_RESULT_SUCCESS != result) {
-			ELOG("SetPlayState failed");
+			ERROR_LOG(AUDIO, "Enqueue failed: %d", result);
+			return false;
 		}
 	}
 
-	ILOG("OpenSL: Shutdown - deleting player object");
+	result = (*recorderRecord)->SetRecordState(recorderRecord, SL_RECORDSTATE_RECORDING);
+	_assert_(SL_RESULT_SUCCESS == result);
+
+	return true;
+}
+
+int OpenSLContext::AudioRecord_Stop() {
+	if (recorderRecord != nullptr) {
+		SLresult result = (*recorderRecord)->SetRecordState(recorderRecord, SL_RECORDSTATE_STOPPED);
+		_assert_(SL_RESULT_SUCCESS == result);
+	}
+	if (recorderObject != nullptr) {
+		(*recorderObject)->Destroy(recorderObject);
+		recorderObject = nullptr;
+		recorderRecord = nullptr;
+		recorderBufferQueue = nullptr;
+	}
+	if (recordBuffer[0] != nullptr) {
+		delete [] recordBuffer[0];
+		delete [] recordBuffer[1];
+		recordBuffer[0] = nullptr;
+		recordBuffer[1] = nullptr;
+	}
+	return true;
+}
+
+// shut down the native audio system
+OpenSLContext::~OpenSLContext() {
+	if (bqPlayerPlay) {
+		INFO_LOG(AUDIO, "OpenSL: Shutdown - stopping playback");
+		SLresult result;
+		result = (*bqPlayerPlay)->SetPlayState(bqPlayerPlay, SL_PLAYSTATE_STOPPED);
+		if (SL_RESULT_SUCCESS != result) {
+			ERROR_LOG(AUDIO, "SetPlayState failed");
+		}
+	}
+
+	INFO_LOG(AUDIO, "OpenSL: Shutdown - deleting player object");
 
 	if (bqPlayerObject) {
 		(*bqPlayerObject)->Destroy(bqPlayerObject);
@@ -167,14 +289,15 @@ OpenSLContext::~OpenSLContext() {
 		bqPlayerVolume = nullptr;
 	}
 
-	ILOG("OpenSL: Shutdown - deleting mix object");
+	INFO_LOG(AUDIO, "OpenSL: Shutdown - deleting mix object");
 
 	if (outputMixObject) {
 		(*outputMixObject)->Destroy(outputMixObject);
 		outputMixObject = nullptr;
 	}
+	AudioRecord_Stop();
 
-	ILOG("OpenSL: Shutdown - deleting engine object");
+	INFO_LOG(AUDIO, "OpenSL: Shutdown - deleting engine object");
 
 	if (engineObject) {
 		(*engineObject)->Destroy(engineObject);
@@ -186,6 +309,5 @@ OpenSLContext::~OpenSLContext() {
 		delete[] buffer[i];
 		buffer[i] = nullptr;
 	}
-	ILOG("OpenSL: Shutdown - finished");
-}	
-
+	INFO_LOG(AUDIO, "OpenSL: Shutdown - finished");
+}

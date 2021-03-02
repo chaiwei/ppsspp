@@ -20,8 +20,8 @@
 #include <functional>
 #include <memory>
 
-#include "ui/ui_screen.h"
-#include "ui/viewgroup.h"
+#include "Common/UI/UIScreen.h"
+#include "Common/UI/ViewGroup.h"
 #include "UI/MiscScreens.h"
 #include "UI/TextureUtil.h"
 
@@ -69,6 +69,7 @@ public:
 
 	void GetContentDimensionsBySpec(const UIContext &dc, UI::MeasureSpec horiz, UI::MeasureSpec vert, float &w, float &h) const override;
 	void Draw(UIContext &dc) override;
+	std::string DescribeText() const override { return text_; }
 
 	void DeviceLost() override;
 	void DeviceRestored(Draw::DrawContext *draw) override;

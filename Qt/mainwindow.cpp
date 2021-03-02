@@ -7,8 +7,9 @@
 #include <QFileDialog>
 #include <QMessageBox>
 
-#include "base/display.h"
-#include "base/NativeApp.h"
+#include "Common/System/Display.h"
+#include "Common/System/NativeApp.h"
+#include "Common/System/System.h"
 #include "Core/MIPS/MIPSDebugInterface.h"
 #include "Core/Debugger/SymbolMap.h"
 #include "Core/HLE/sceUmd.h"
@@ -23,13 +24,6 @@ MainWindow::MainWindow(QWidget *parent, bool fullscreen) :
 	nextState(CORE_POWERDOWN),
 	lastUIState(UISTATE_MENU)
 {
-	QDesktopWidget *desktop = QApplication::desktop();
-	int screenNum = QProcessEnvironment::systemEnvironment().value("SDL_VIDEO_FULLSCREEN_HEAD", "0").toInt();
-
-	// Move window to the center of selected screen
-	QRect rect = desktop->screenGeometry(screenNum);
-	move((rect.width() - frameGeometry().width()) / 4, (rect.height() - frameGeometry().height()) / 4);
-
 	setWindowIcon(QIcon(qApp->applicationDirPath() + "/assets/icon_regular_72.png"));
 
 	SetGameTitle("");
@@ -62,6 +56,9 @@ void MainWindow::newFrame()
 
 		updateMenus();
 	}
+
+	if (g_Config.bFullScreen != isFullScreen())
+		SetFullScreen(g_Config.bFullScreen);
 
 	std::unique_lock<std::mutex> lock(msgMutex_);
 	while (!msgQueue_.empty()) {
@@ -111,9 +108,6 @@ void MainWindow::updateMenus()
 
 void MainWindow::bootDone()
 {
-	if (g_Config.bFullScreen != isFullScreen())
-		SetFullScreen(g_Config.bFullScreen);
-
 	if (nextState == CORE_RUNNING)
 		runAct();
 	updateMenus();
@@ -388,6 +382,13 @@ void MainWindow::SetFullScreen(bool fullscreen) {
 
 		if (GetUIState() == UISTATE_INGAME && QApplication::overrideCursor())
 			QApplication::restoreOverrideCursor();
+
+		QDesktopWidget *desktop = QApplication::desktop();
+		int screenNum = QProcessEnvironment::systemEnvironment().value("SDL_VIDEO_FULLSCREEN_HEAD", "0").toInt();
+
+		// Move window to the center of selected screen
+		QRect rect = desktop->screenGeometry(screenNum);
+		move((rect.width() - frameGeometry().width()) / 4, (rect.height() - frameGeometry().height()) / 4);
 	}
 }
 
@@ -476,6 +477,7 @@ void MainWindow::SetWindowScale(int zoom) {
 #else
 	resize(g_Config.iWindowWidth, g_Config.iWindowHeight);
 #endif
+	updateMenus();
 }
 
 void MainWindow::SetGameTitle(QString text)
@@ -602,7 +604,7 @@ void MainWindow::createMenus()
 	MenuTree* windowMenu = new MenuTree(this, gameSettingsMenu, QT_TR_NOOP("&Window size"));
 	windowGroup = new MenuActionGroup(this, windowMenu, SLOT(windowGroup_triggered(QAction *)),
 		QStringList() << "&1x" << "&2x" << "&3x" << "&4x" << "&5x" << "&6x" << "&7x" << "&8x" << "&9x" << "1&0x",
-		QList<int>() << 0 << 1 << 2 << 3 << 4 << 5 << 6 << 7 << 8 << 9);
+		QList<int>() << 1 << 2 << 3 << 4 << 5 << 6 << 7 << 8 << 9 << 10);
 
 	MenuTree* renderingModeMenu = new MenuTree(this, gameSettingsMenu, QT_TR_NOOP("Rendering m&ode"));
 	renderingModeGroup = new MenuActionGroup(this, renderingModeMenu, SLOT(renderingModeGroup_triggered(QAction *)),

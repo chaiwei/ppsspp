@@ -17,10 +17,9 @@
 
 #include <algorithm>
 
-#include "base/logging.h"
-#include "base/timeutil.h"
-
+#include "Common/Log.h"
 #include "Common/MemoryUtil.h"
+#include "Common/TimeUtil.h"
 #include "Core/MemMap.h"
 #include "Core/System.h"
 #include "Core/Reporting.h"
@@ -318,10 +317,6 @@ VertexArrayInfoD3D11::~VertexArrayInfoD3D11() {
 		ebo->Release();
 }
 
-static uint32_t SwapRB(uint32_t c) {
-	return (c & 0xFF00FF00) | ((c >> 16) & 0xFF) | ((c << 16) & 0xFF0000);
-}
-
 // The inline wrapper in the header checks for numDrawCalls == 0
 void DrawEngineD3D11::DoFlush() {
 	gpuStats.numFlushes++;
@@ -331,7 +326,7 @@ void DrawEngineD3D11::DoFlush() {
 	int curRenderStepId = draw_->GetCurrentStepId();
 	if (lastRenderStepId_ != curRenderStepId) {
 		// Dirty everything that has dynamic state that will need re-recording.
-		gstate_c.Dirty(DIRTY_VIEWPORTSCISSOR_STATE);
+		gstate_c.Dirty(DIRTY_VIEWPORTSCISSOR_STATE | DIRTY_TEXTURE_IMAGE | DIRTY_TEXTURE_PARAMS);
 		lastRenderStepId_ = curRenderStepId;
 	}
 
@@ -342,7 +337,7 @@ void DrawEngineD3D11::DoFlush() {
 	ApplyDrawState(prim);
 
 	// Always use software for flat shading to fix the provoking index.
-	bool tess = gstate_c.bezier || gstate_c.spline;
+	bool tess = gstate_c.submitType == SubmitType::HW_BEZIER || gstate_c.submitType == SubmitType::HW_SPLINE;
 	bool useHWTransform = CanUseHardwareTransform(prim) && (tess || gstate.getShadeMode() != GE_SHADE_FLAT);
 
 	if (useHWTransform) {
@@ -372,7 +367,7 @@ void DrawEngineD3D11::DoFlush() {
 			case VertexArrayInfoD3D11::VAI_NEW:
 				{
 					// Haven't seen this one before.
-					ReliableHashType dataHash = ComputeHash();
+					uint64_t dataHash = ComputeHash();
 					vai->hash = dataHash;
 					vai->minihash = ComputeMiniHash();
 					vai->status = VertexArrayInfoD3D11::VAI_HASHING;
@@ -396,7 +391,7 @@ void DrawEngineD3D11::DoFlush() {
 					if (vai->drawsUntilNextFullHash == 0) {
 						// Let's try to skip a full hash if mini would fail.
 						const u32 newMiniHash = ComputeMiniHash();
-						ReliableHashType newHash = vai->hash;
+						uint64_t newHash = vai->hash;
 						if (newMiniHash == vai->minihash) {
 							newHash = ComputeHash();
 						}
@@ -524,7 +519,7 @@ rotateVBO:
 
 		D3D11VertexShader *vshader;
 		D3D11FragmentShader *fshader;
-		shaderManager_->GetShaders(prim, lastVType_, &vshader, &fshader, useHWTransform, useHWTessellation_);
+		shaderManager_->GetShaders(prim, lastVType_, &vshader, &fshader, useHWTransform, useHWTessellation_, decOptions_.expandAllWeightsToFloat);
 		ID3D11InputLayout *inputLayout = SetupDecFmtForDraw(vshader, dec_->GetDecVtxFmt(), dec_->VertexType());
 		context_->PSSetShader(fshader->GetShader(), nullptr, 0);
 		context_->VSSetShader(vshader->GetShader(), nullptr, 0);
@@ -604,13 +599,11 @@ rotateVBO:
 			framebufferManager_->SetSafeSize(result.safeWidth, result.safeHeight);
 
 		if (result.action == SW_DRAW_PRIMITIVES) {
-			const int vertexSize = sizeof(transformed[0]);
-
 			ApplyDrawStateLate(result.setStencil, result.stencilValue);
 
 			D3D11VertexShader *vshader;
 			D3D11FragmentShader *fshader;
-			shaderManager_->GetShaders(prim, lastVType_, &vshader, &fshader, false, false);
+			shaderManager_->GetShaders(prim, lastVType_, &vshader, &fshader, false, false, decOptions_.expandAllWeightsToFloat);
 			context_->PSSetShader(fshader->GetShader(), nullptr, 0);
 			context_->VSSetShader(vshader->GetShader(), nullptr, 0);
 			shaderManager_->UpdateUniforms(framebufferManager_->UseBufferedRendering());

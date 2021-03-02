@@ -3,8 +3,8 @@
 #include <math.h>
 #include <tchar.h>
 
-#include "base/display.h"
-#include "util/text/utf8.h"
+#include "Common/System/Display.h"
+#include "Common/Data/Encoding/Utf8.h"
 #include "Windows/resource.h"
 #include "Core/MemMap.h"
 #include "Windows/W32Util/Misc.h"
@@ -18,8 +18,6 @@
 #include "DebuggerShared.h"
 
 #include "Windows/main.h"
-
-static const int numCPUs = 1;
 
 extern HMENU g_hPopupMenus;
 
@@ -257,7 +255,7 @@ void CtrlRegisterList::onPaint(WPARAM wParam, LPARAM lParam)
 		{
 			char temp[256];
 			int len;
-			u32 value;
+			u32 value = -1;
 
 			switch (i)
 			{
@@ -314,7 +312,6 @@ void CtrlRegisterList::onKeyDown(WPARAM wParam, LPARAM lParam)
 {
 	RECT rect;
 	GetClientRect(this->wnd, &rect);
-	int page=(rect.bottom/rowHeight)/2-1;
 
 	if (ctrlDown && tolower(wParam) == 'c')
 	{
@@ -520,9 +517,8 @@ void CtrlRegisterList::onMouseUp(WPARAM wParam, LPARAM lParam, int button)
 			SendMessage(GetParent(wnd),WM_DEB_GOTOHEXEDIT,val,0);
 			break;
 		case ID_REGLIST_GOTOINDISASM:
-			for (int i=0; i<numCPUs; i++)
-				if (disasmWindow[i])
-					disasmWindow[i]->Goto(val);
+			if (disasmWindow)
+				disasmWindow->Goto(val);
 			break;
 		case ID_REGLIST_COPYVALUE:
 			copyRegisterValue();

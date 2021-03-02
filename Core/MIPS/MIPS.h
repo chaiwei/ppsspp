@@ -21,7 +21,7 @@
 
 #include <cstddef>
 
-#include "util/random/rng.h"
+#include "Common/Data/Random/Rng.h"
 #include "Common/Common.h"
 #include "Common/CommonTypes.h"
 // #include "Core/CoreParameter.h"
@@ -162,7 +162,7 @@ enum class CPUCore;
 	(int)(offsetof(MIPSState, x) - offsetof(MIPSState, f[0]) + (i) * 4))
 
 // To get RIP/relative addressing (requires tight memory control so generated code isn't too far from the binary, and a reachable variable called mips):
-// #define MIPSSTATE_VAR(x) M(&mips->x)
+// #define MIPSSTATE_VAR(x) M(&mips_->x)
 
 #endif
 

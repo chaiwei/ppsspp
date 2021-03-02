@@ -12,24 +12,29 @@
 #import <GLKit/GLKit.h>
 #include <cassert>
 
-#include "base/display.h"
-#include "base/timeutil.h"
-#include "file/zip_read.h"
-#include "input/input_state.h"
-#include "net/resolve.h"
-#include "ui/screen.h"
-#include "thin3d/thin3d.h"
-#include "thin3d/thin3d_create.h"
-#include "thin3d/GLRenderManager.h"
-#include "input/keycodes.h"
-#include "gfx_es2/gpu_features.h"
+#include "Common/Net/Resolve.h"
+#include "Common/UI/Screen.h"
+#include "Common/GPU/thin3d.h"
+#include "Common/GPU/thin3d_create.h"
+#include "Common/GPU/OpenGL/GLRenderManager.h"
+#include "Common/GPU/OpenGL/GLFeatures.h"
+
+#include "Common/System/Display.h"
+#include "Common/System/System.h"
+#include "Common/System/NativeApp.h"
+#include "Common/File/VFS/VFS.h"
+#include "Common/Log.h"
+#include "Common/TimeUtil.h"
+#include "Common/Input/InputState.h"
+#include "Common/Input/KeyCodes.h"
+#include "Common/GraphicsContext.h"
 
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
 #include "Core/System.h"
 #include "Core/HLE/sceUsbCam.h"
 #include "Core/HLE/sceUsbGps.h"
-#include "Common/GraphicsContext.h"
+#include "Core/Host.h"
 
 #include <sys/types.h>
 #include <sys/sysctl.h>
@@ -91,6 +96,7 @@ static double lastStartPress = 0.0f;
 static bool simulateAnalog = false;
 static bool threadEnabled = true;
 static bool threadStopped = false;
+static UITouch *g_touches[10];
 
 __unsafe_unretained ViewController* sharedViewController;
 static GraphicsContext *graphicsContext;
@@ -102,7 +108,7 @@ static LocationHelper *locationHelper;
 }
 
 @property (nonatomic, strong) EAGLContext* context;
-@property (nonatomic, strong) NSMutableArray<NSDictionary *>* touches;
+
 //@property (nonatomic) iCadeReaderView* iCadeView;
 #if __IPHONE_OS_VERSION_MAX_ALLOWED > __IPHONE_6_1
 @property (nonatomic) GCController *gameController __attribute__((weak_import));
@@ -122,7 +128,7 @@ static LocationHelper *locationHelper;
 	self = [super init];
 	if (self) {
 		sharedViewController = self;
-		self.touches = [NSMutableArray array];
+		memset(g_touches, 0, sizeof(g_touches));
 
 		iCadeToKeyMap[iCadeJoystickUp]		= NKCODE_DPAD_UP;
 		iCadeToKeyMap[iCadeJoystickRight]	= NKCODE_DPAD_RIGHT;
@@ -191,6 +197,7 @@ static LocationHelper *locationHelper;
 	GLKView* view = (GLKView *)self.view;
 	view.context = self.context;
 	view.drawableDepthFormat = GLKViewDrawableDepthFormat24;
+	view.drawableStencilFormat = GLKViewDrawableStencilFormat8;
 	[EAGLContext setCurrentContext:self.context];
 	self.preferredFramesPerSecond = 60;
 
@@ -198,6 +205,10 @@ static LocationHelper *locationHelper;
 
 	graphicsContext = new IOSGraphicsContext();
 	
+	graphicsContext->GetDrawContext()->SetErrorCallback([](const char *shortDesc, const char *details, void *userdata) {
+		host->NotifyUserMessage(details, 5.0, 0xFFFFFFFF, "error_callback");
+	}, nullptr);
+
 	graphicsContext->ThreadStart();
 
 	dp_xscale = (float)dp_xres / (float)pixel_xres;
@@ -244,19 +255,18 @@ static LocationHelper *locationHelper;
 	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
 		NativeInitGraphics(graphicsContext);
 
-		ILOG("Emulation thread starting\n");
+		INFO_LOG(SYSTEM, "Emulation thread starting\n");
 		while (threadEnabled) {
 			NativeUpdate();
 			NativeRender(graphicsContext);
-			time_update();
 		}
 
 
-		ILOG("Emulation thread shutting down\n");
+		INFO_LOG(SYSTEM, "Emulation thread shutting down\n");
 		NativeShutdownGraphics();
 
 		// Also ask the main thread to stop, so it doesn't hang waiting for a new frame.
-		ILOG("Emulation thread stopping\n");
+		INFO_LOG(SYSTEM, "Emulation thread stopping\n");
 		graphicsContext->StopThread();
 		
 		threadStopped = true;
@@ -375,37 +385,38 @@ static LocationHelper *locationHelper;
 	NativeTouch(input);
 }
 
-- (NSDictionary*)touchDictBy:(UITouch*)touch
-{
-	for (NSDictionary* dict in self.touches) {
-		if ([dict objectForKey:@"touch"] == touch)
-			return dict;
-	}
-	return nil;
-}
-
-- (int)freeTouchIndex
-{
-	int index = 0;
-
-	for (NSDictionary* dict in self.touches)
-	{
-		int i = [[dict objectForKey:@"index"] intValue];
-		if (index == i)
-			index = i+1;
+int ToTouchID(UITouch *uiTouch, bool allowAllocate) {
+	// Find the id for the touch.  Avoid 0 (mouse.)
+	for (int localId = 1; localId < (int)ARRAY_SIZE(g_touches); ++localId) {
+		if (g_touches[localId] == uiTouch) {
+			return localId;
+		}
 	}
 
-	return index;
+	// Allocate a new one, perhaps?
+	if (allowAllocate) {
+		for (int localId = 1; localId < (int)ARRAY_SIZE(g_touches); ++localId) {
+			if (g_touches[localId] == 0) {
+				g_touches[localId] = uiTouch;
+				return localId;
+			}
+		}
+
+		// None were free. Ignore?
+		return 0;
+	}
+
+	return -1;
 }
+
 
 - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event
 {
 	for(UITouch* touch in touches)
 	{
-		NSDictionary* dict = @{@"touch":touch,@"index":@([self freeTouchIndex])};
-		[self.touches addObject:dict];
 		CGPoint point = [touch locationInView:self.view];
-		[self touchX:point.x y:point.y code:1 pointerId:[[dict objectForKey:@"index"] intValue]];
+		int touchId = ToTouchID(touch, true);
+		[self touchX:point.x y:point.y code:1 pointerId:touchId];
 	}
 }
 
@@ -414,8 +425,8 @@ static LocationHelper *locationHelper;
 	for(UITouch* touch in touches)
 	{
 		CGPoint point = [touch locationInView:self.view];
-		NSDictionary* dict = [self touchDictBy:touch];
-		[self touchX:point.x y:point.y code:0 pointerId:[[dict objectForKey:@"index"] intValue]];
+		int touchId = ToTouchID(touch, true);
+		[self touchX:point.x y:point.y code:0 pointerId: touchId];
 	}
 }
 
@@ -424,9 +435,11 @@ static LocationHelper *locationHelper;
 	for(UITouch* touch in touches)
 	{
 		CGPoint point = [touch locationInView:self.view];
-		NSDictionary* dict = [self touchDictBy:touch];
-		[self touchX:point.x y:point.y code:2 pointerId:[[dict objectForKey:@"index"] intValue]];
-		[self.touches removeObject:dict];
+		int touchId = ToTouchID(touch, false);
+		if (touchId >= 0) {
+			[self touchX:point.x y:point.y code:2 pointerId: touchId];
+			g_touches[touchId] = nullptr;
+		}
 	}
 }
 
@@ -435,9 +448,11 @@ static LocationHelper *locationHelper;
 	for(UITouch* touch in touches)
 	{
 		CGPoint point = [touch locationInView:self.view];
-		NSDictionary* dict = [self touchDictBy:touch];
-		[self touchX:point.x y:point.y code:2 pointerId:[[dict objectForKey:@"index"] intValue]];
-		[self.touches removeObject:dict];
+		int touchId = ToTouchID(touch, false);
+		if (touchId >= 0) {
+			[self touchX:point.x y:point.y code:2 pointerId: touchId];
+			g_touches[touchId] = nullptr;
+		}
 	}
 }
 
@@ -665,6 +680,38 @@ static LocationHelper *locationHelper;
 	extendedProfile.rightTrigger.valueChangedHandler = ^(GCControllerButtonInput *button, float value, BOOL pressed) {
 		[self controllerButtonPressed:pressed keyCode:NKCODE_BUTTON_10]; // Start
 	};
+
+#if defined(__IPHONE_12_1) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_12_1
+	if (extendedProfile.leftThumbstickButton != nil) {
+		extendedProfile.leftThumbstickButton.valueChangedHandler = ^(GCControllerButtonInput *button, float value, BOOL pressed) {
+			[self controllerButtonPressed:pressed keyCode:NKCODE_BUTTON_11];
+		};
+	}
+	if (extendedProfile.rightThumbstickButton != nil) {
+		extendedProfile.rightThumbstickButton.valueChangedHandler = ^(GCControllerButtonInput *button, float value, BOOL pressed) {
+			[self controllerButtonPressed:pressed keyCode:NKCODE_BUTTON_12];
+		};
+	}
+#endif
+#if defined(__IPHONE_13_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_13_0
+	if (extendedProfile.buttonOptions != nil) {
+		extendedProfile.buttonOptions.valueChangedHandler = ^(GCControllerButtonInput *button, float value, BOOL pressed) {
+			[self controllerButtonPressed:pressed keyCode:NKCODE_BUTTON_13];
+		};
+	}
+	if (extendedProfile.buttonMenu != nil) {
+		extendedProfile.buttonMenu.valueChangedHandler = ^(GCControllerButtonInput *button, float value, BOOL pressed) {
+			[self controllerButtonPressed:pressed keyCode:NKCODE_BUTTON_14];
+		};
+	}
+#endif
+#if defined(__IPHONE_14_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_14_0
+	if (extendedProfile.buttonHome != nil) {
+		extendedProfile.buttonHome.valueChangedHandler = ^(GCControllerButtonInput *button, float value, BOOL pressed) {
+			[self controllerButtonPressed:pressed keyCode:NKCODE_BUTTON_15];
+		};
+	}
+#endif
 	
 	extendedProfile.leftThumbstick.xAxis.valueChangedHandler = ^(GCControllerAxisInput *axis, float value) {
 		AxisInput axisInput;

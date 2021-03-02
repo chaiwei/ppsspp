@@ -8,6 +8,8 @@
 #include <QMainWindow>
 #include <QActionGroup>
 
+#include "Common/System/System.h"
+#include "Common/System/NativeApp.h"
 #include "ConsoleListener.h"
 #include "Core/Core.h"
 #include "Core/Config.h"
@@ -182,7 +184,11 @@ private slots:
 	void cheatsAct() { g_Config.bEnableCheats = !g_Config.bEnableCheats; }
 
 	// Chat
-	void chatAct() { NativeMessageReceived("chat screen", ""); }
+	void chatAct() {
+		g_Config.bEnableNetworkChat = true;
+		updateMenus();
+		NativeMessageReceived("chat screen", "");
+	}
 
 	void fullscrAct();
 	void raiseTopMost();

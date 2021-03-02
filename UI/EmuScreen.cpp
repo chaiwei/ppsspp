@@ -19,25 +19,25 @@
 
 #include <algorithm>
 
-#include "base/display.h"
-#include "base/logging.h"
-#include "base/timeutil.h"
-#include "profiler/profiler.h"
+#include "Common/Render/TextureAtlas.h"
+#include "Common/GPU/OpenGL/GLFeatures.h"
+#include "Common/Render/Text/draw_text.h"
 
-#include "gfx/texture_atlas.h"
-#include "gfx_es2/gpu_features.h"
-#include "gfx_es2/draw_text.h"
+#include "Common/UI/Root.h"
+#include "Common/UI/UI.h"
+#include "Common/UI/Context.h"
+#include "Common/UI/Tween.h"
+#include "Common/UI/View.h"
 
-#include "input/input_state.h"
-#include "math/curves.h"
-#include "ui/root.h"
-#include "ui/ui.h"
-#include "ui/ui_context.h"
-#include "ui/ui_tween.h"
-#include "ui/view.h"
-#include "i18n/i18n.h"
-
-#include "Common/KeyMap.h"
+#include "Common/Data/Text/I18n.h"
+#include "Common/Input/InputState.h"
+#include "Common/Log.h"
+#include "Common/System/Display.h"
+#include "Common/System/System.h"
+#include "Common/System/NativeApp.h"
+#include "Common/Profiler/Profiler.h"
+#include "Common/Math/curves.h"
+#include "Common/TimeUtil.h"
 
 #ifndef MOBILE_DEVICE
 #include "Core/AVIDump.h"
@@ -48,6 +48,8 @@
 #include "Core/CoreParameter.h"
 #include "Core/Core.h"
 #include "Core/Host.h"
+#include "Core/KeyMap.h"
+#include "Core/MemFault.h"
 #include "Core/Reporting.h"
 #include "Core/System.h"
 #include "GPU/GPUState.h"
@@ -88,8 +90,6 @@
 #ifndef MOBILE_DEVICE
 static AVIDump avi;
 #endif
-
-UI::ChoiceWithValueDisplay *chatButtons;
 
 static bool frameStep_;
 static int lastNumFlips;
@@ -250,8 +250,6 @@ void EmuScreen::bootGame(const std::string &filename) {
 	coreParam.printfEmuLog = false;
 	coreParam.headLess = false;
 
-	const Bounds &bounds = screenManager()->getUIContext()->GetBounds();
-
 	if (g_Config.iInternalResolution == 0) {
 		coreParam.renderWidth = pixel_xres;
 		coreParam.renderHeight = pixel_yres;
@@ -404,7 +402,7 @@ void EmuScreen::sendMessage(const char *message, const char *value) {
 
 		std::string resetError;
 		if (!PSP_InitStart(PSP_CoreParameter(), &resetError)) {
-			ELOG("Error resetting: %s", resetError.c_str());
+			ERROR_LOG(LOADER, "Error resetting: %s", resetError.c_str());
 			stopRender_ = true;
 			screenManager()->switchScreen(new MainScreen());
 			System_SendMessage("event", "failstartgame");
@@ -418,6 +416,8 @@ void EmuScreen::sendMessage(const char *message, const char *value) {
 			PSP_Shutdown();
 			bootPending_ = true;
 			gamePath_ = value;
+			// Don't leave it on CORE_POWERDOWN, we'll sometimes aggressively bail.
+			Core_UpdateState(CORE_POWERUP);
 		}
 	} else if (!strcmp(message, "config_loaded")) {
 		// In case we need to position touch controls differently.
@@ -856,7 +856,7 @@ void EmuScreen::pspKey(int pspKeyCode, int flags) {
 			onVKeyUp(pspKeyCode);
 		}
 	} else {
-		// ILOG("pspKey %i %i", pspKeyCode, flags);
+		// INFO_LOG(SYSTEM, "pspKey %i %i", pspKeyCode, flags);
 		if (flags & KEY_DOWN)
 			__CtrlButtonDown(pspKeyCode);
 		if (flags & KEY_UP)
@@ -1002,6 +1002,10 @@ public:
 		}
 	}
 
+	std::string DescribeText() const override {
+		return "";
+	}
+
 	void SetColor(uint32_t c) {
 		color_ = c;
 	}
@@ -1024,43 +1028,52 @@ void EmuScreen::CreateViews() {
 	if (g_Config.bShowDeveloperMenu) {
 		root_->Add(new Button(dev->T("DevMenu")))->OnClick.Handle(this, &EmuScreen::OnDevTools);
 	}
+	resumeButton_ = root_->Add(new Button(dev->T("Resume"), new AnchorLayoutParams(bounds.centerX(), NONE, NONE, 60, true)));
+	resumeButton_->OnClick.Handle(this, &EmuScreen::OnResume);
+	resumeButton_->SetVisibility(V_GONE);
 
 	cardboardDisableButton_ = root_->Add(new Button(sc->T("Cardboard VR OFF"), new AnchorLayoutParams(bounds.centerX(), NONE, NONE, 30, true)));
 	cardboardDisableButton_->OnClick.Handle(this, &EmuScreen::OnDisableCardboard);
 	cardboardDisableButton_->SetVisibility(V_GONE);
+	cardboardDisableButton_->SetScale(0.65f);  // make it smaller - this button can be in the way otherwise.
 
 	if (g_Config.bEnableNetworkChat) {
+		AnchorLayoutParams *layoutParams = nullptr;
 		switch (g_Config.iChatButtonPosition) {
 		case 0:
-			chatButtons = new ChoiceWithValueDisplay(&newChat, n->T("Chat"), new AnchorLayoutParams(130, WRAP_CONTENT, 80, NONE, NONE, 50, true));
+			layoutParams = new AnchorLayoutParams(130, WRAP_CONTENT, 80, NONE, NONE, 50, true);
 			break;
 		case 1:
-			chatButtons = new ChoiceWithValueDisplay(&newChat, n->T("Chat"), new AnchorLayoutParams(130, WRAP_CONTENT, bounds.centerX(), NONE, NONE, 50, true));
+			layoutParams = new AnchorLayoutParams(130, WRAP_CONTENT, bounds.centerX(), NONE, NONE, 50, true);
 			break;
 		case 2:
-			chatButtons = new ChoiceWithValueDisplay(&newChat, n->T("Chat"), new AnchorLayoutParams(130, WRAP_CONTENT, NONE, NONE, 80, 50, true));
+			layoutParams = new AnchorLayoutParams(130, WRAP_CONTENT, NONE, NONE, 80, 50, true);
 			break;
 		case 3:
-			chatButtons = new ChoiceWithValueDisplay(&newChat, n->T("Chat"), new AnchorLayoutParams(130, WRAP_CONTENT, 80, 50, NONE, NONE, true));
+			layoutParams = new AnchorLayoutParams(130, WRAP_CONTENT, 80, 50, NONE, NONE, true);
 			break;
 		case 4:
-			chatButtons = new ChoiceWithValueDisplay(&newChat, n->T("Chat"), new AnchorLayoutParams(130, WRAP_CONTENT, bounds.centerX(), 50, NONE, NONE, true));
+			layoutParams = new AnchorLayoutParams(130, WRAP_CONTENT, bounds.centerX(), 50, NONE, NONE, true);
 			break;
 		case 5:
-			chatButtons = new ChoiceWithValueDisplay(&newChat, n->T("Chat"), new AnchorLayoutParams(130, WRAP_CONTENT, NONE, 50, 80, NONE, true));
+			layoutParams = new AnchorLayoutParams(130, WRAP_CONTENT, NONE, 50, 80, NONE, true);
 			break;
 		case 6:
-			chatButtons = new ChoiceWithValueDisplay(&newChat, n->T("Chat"), new AnchorLayoutParams(130, WRAP_CONTENT, 80, bounds.centerY(), NONE, NONE, true));
+			layoutParams = new AnchorLayoutParams(130, WRAP_CONTENT, 80, bounds.centerY(), NONE, NONE, true);
 			break;
 		case 7:
-			chatButtons = new ChoiceWithValueDisplay(&newChat, n->T("Chat"), new AnchorLayoutParams(130, WRAP_CONTENT, NONE, bounds.centerY(), 80, NONE, true));
+			layoutParams = new AnchorLayoutParams(130, WRAP_CONTENT, NONE, bounds.centerY(), 80, NONE, true);
 			break;
 		default:
-			chatButtons = new ChoiceWithValueDisplay(&newChat, n->T("Chat"), new AnchorLayoutParams(130, WRAP_CONTENT, 80, NONE, NONE, 50, true));
+			layoutParams = new AnchorLayoutParams(130, WRAP_CONTENT, 80, NONE, NONE, 50, true);
 			break;
 		}
 
-		root_->Add(chatButtons)->OnClick.Handle(this, &EmuScreen::OnChat);
+		ChoiceWithValueDisplay *btn = new ChoiceWithValueDisplay(&newChat, n->T("Chat"), layoutParams);
+		root_->Add(btn)->OnClick.Handle(this, &EmuScreen::OnChat);
+		chatButton_ = btn;
+	} else {
+		chatButton_ = nullptr;
 	}
 
 	saveStatePreview_ = new AsyncImageFileView("", IS_FIXED, nullptr, new AnchorLayoutParams(bounds.centerX(), 100, NONE, NONE, true));
@@ -1069,7 +1082,7 @@ void EmuScreen::CreateViews() {
 	saveStatePreview_->SetVisibility(V_GONE);
 	saveStatePreview_->SetCanBeFocused(false);
 	root_->Add(saveStatePreview_);
-	root_->Add(new OnScreenMessagesView(new AnchorLayoutParams((Size)bounds.w, (Size)bounds.h)));
+	onScreenMessagesView_ = root_->Add(new OnScreenMessagesView(new AnchorLayoutParams((Size)bounds.w, (Size)bounds.h)));
 
 	GameInfoBGView *loadingBG = root_->Add(new GameInfoBGView(gamePath_, new AnchorLayoutParams(FILL_PARENT, FILL_PARENT)));
 	TextView *loadingTextView = root_->Add(new TextView(sc->T(PSP_GetLoading()), new AnchorLayoutParams(bounds.centerX(), NONE, NONE, 40, true)));
@@ -1090,7 +1103,6 @@ void EmuScreen::CreateViews() {
 	loadingSpinner->SetTag("LoadingSpinner");
 
 	// Don't really need this, and it creates a lot of strings to translate...
-	// Maybe just show "Loading game..." only?
 	loadingTextView->SetVisibility(V_GONE);
 	loadingTextView->SetShadow(true);
 
@@ -1134,18 +1146,33 @@ UI::EventReturn EmuScreen::OnDisableCardboard(UI::EventParams &params) {
 	return UI::EVENT_DONE;
 }
 
-UI::EventReturn EmuScreen::OnChat(UI::EventParams& params) {
-	if (chatButtons->GetVisibility() == UI::V_VISIBLE) chatButtons->SetVisibility(UI::V_GONE);
+UI::EventReturn EmuScreen::OnChat(UI::EventParams &params) {
+	if (chatButton_ != nullptr && chatButton_->GetVisibility() == UI::V_VISIBLE) {
+		chatButton_->SetVisibility(UI::V_GONE);
+	}
 	screenManager()->push(new ChatMenu());
 	return UI::EVENT_DONE;
 }
 
+UI::EventReturn EmuScreen::OnResume(UI::EventParams &params) {
+	if (coreState == CoreState::CORE_RUNTIME_ERROR) {
+		// Force it!
+		Memory::MemFault_IgnoreLastCrash();
+		coreState = CoreState::CORE_RUNNING;
+	}
+	return UI::EVENT_DONE;
+}
+
 void EmuScreen::update() {
+	using namespace UI;
 
 	UIScreen::update();
+	onScreenMessagesView_->SetVisibility(g_Config.bShowOnScreenMessages ? V_VISIBLE : V_GONE);
+	resumeButton_->SetVisibility(coreState == CoreState::CORE_RUNTIME_ERROR && Memory::MemFault_MayBeResumable() ? V_VISIBLE : V_GONE);
 
-	if (bootPending_)
+	if (bootPending_) {
 		bootGame(gamePath_);
+	}
 
 	// Simply forcibly update to the current screen size every frame. Doesn't cost much.
 	// If bounds is set to be smaller than the actual pixel resolution of the display, respect that.
@@ -1231,7 +1258,7 @@ void EmuScreen::checkPowerDown() {
 		if (PSP_IsInited()) {
 			PSP_Shutdown();
 		}
-		ILOG("SELF-POWERDOWN!");
+		INFO_LOG(SYSTEM, "SELF-POWERDOWN!");
 		screenManager()->switchScreen(new MainScreen());
 		bootPending_ = false;
 		invalid_ = true;
@@ -1256,7 +1283,16 @@ static void DrawDebugStats(DrawBuffer *draw2d, const Bounds &bounds) {
 	draw2d->SetFontScale(1.0f, 1.0f);
 }
 
-static void DrawCrashDump(DrawBuffer *draw2d) {
+static const char *CPUCoreAsString(int core) {
+	switch (core) {
+	case 0: return "Interpreter";
+	case 1: return "JIT";
+	case 2: return "IR Interpreter";
+	default: return "N/A";
+	}
+}
+
+static void DrawCrashDump(UIContext *ctx) {
 	const ExceptionInfo &info = Core_GetExceptionInfo();
 
 	FontID ubuntu24("UBUNTU24");
@@ -1267,28 +1303,38 @@ static void DrawCrashDump(DrawBuffer *draw2d) {
 	// TODO: Draw a lot more information. Full register set, and so on.
 
 #ifdef _DEBUG
-	char build[] = "Debug";
+	char build[] = "debug";
 #else
-	char build[] = "Release";
+	char build[] = "release";
 #endif
+
+	std::string sysName = System_GetProperty(SYSPROP_NAME);
+	int sysVersion = System_GetPropertyInt(SYSPROP_SYSTEMVERSION);
+
+	// First column
+	ctx->Flush();
+	int x = 20 + System_GetPropertyFloat(SYSPROP_DISPLAY_SAFE_INSET_LEFT);
+	int y = 50 + System_GetPropertyFloat(SYSPROP_DISPLAY_SAFE_INSET_TOP);
+
+	int columnWidth = (ctx->GetBounds().w - x - 10) / 2;
+	int height = ctx->GetBounds().h;
+
+	ctx->PushScissor(Bounds(x, y, columnWidth, height));
+
 	snprintf(statbuf, sizeof(statbuf), R"(%s
-Game ID (Title): %s (%s)
-PPSSPP build: %s (%s)
-ABI: %s
+%s (%s)
+%s (%s)
+%s v%d (%s)
 )",
 		ExceptionTypeAsString(info.type),
-		g_paramSFO.GetDiscID().c_str(),
-		g_paramSFO.GetValueString("TITLE").c_str(),
-		versionString,
-		build,
-		GetCompilerABI()
+		g_paramSFO.GetDiscID().c_str(), g_paramSFO.GetValueString("TITLE").c_str(),
+		versionString, build,
+		sysName.c_str(), sysVersion, GetCompilerABI()
 	);
 
-	draw2d->SetFontScale(.7f, .7f);
-	int x = 20;
-	int y = 50;
-	draw2d->DrawTextShadow(ubuntu24, statbuf, x, y, 0xFFFFFFFF);
-	y += 100;
+	ctx->Draw()->SetFontScale(.7f, .7f);
+	ctx->Draw()->DrawTextShadow(ubuntu24, statbuf, x, y, 0xFFFFFFFF);
+	y += 140;
 
 	if (info.type == ExceptionType::MEMORY) {
 		snprintf(statbuf, sizeof(statbuf), R"(
@@ -1299,7 +1345,7 @@ PC: %08x
 			info.address,
 			info.pc,
 			info.info.c_str());
-		draw2d->DrawTextShadow(ubuntu24, statbuf, x, y, 0xFFFFFFFF);
+		ctx->Draw()->DrawTextShadow(ubuntu24, statbuf, x, y, 0xFFFFFFFF);
 		y += 180;
 	} else if (info.type == ExceptionType::BAD_EXEC_ADDR) {
 		snprintf(statbuf, sizeof(statbuf), R"(
@@ -1308,13 +1354,33 @@ PC: %08x)",
 			ExecExceptionTypeAsString(info.exec_type),
 			info.address,
 			info.pc);
-		draw2d->DrawTextShadow(ubuntu24, statbuf, x, y, 0xFFFFFFFF);
-		y += 120;
+		ctx->Draw()->DrawTextShadow(ubuntu24, statbuf, x, y, 0xFFFFFFFF);
+		y += 180;
+	} else {
+		snprintf(statbuf, sizeof(statbuf), R"(
+BREAK
+)");
+		ctx->Draw()->DrawTextShadow(ubuntu24, statbuf, x, y, 0xFFFFFFFF);
+		y += 180;
 	}
 
 	std::string kernelState = __KernelStateSummary();
 
-	draw2d->DrawTextShadow(ubuntu24, kernelState.c_str(), x, y, 0xFFFFFFFF);
+	ctx->Draw()->DrawTextShadow(ubuntu24, kernelState.c_str(), x, y, 0xFFFFFFFF);
+
+	ctx->PopScissor();
+
+	// Draw some additional stuff to the right.
+
+	x += columnWidth + 10;
+	y = 50;
+	snprintf(statbuf, sizeof(statbuf),
+		"CPU Core: %s\n"
+		"Locked CPU freq: %d MHz\n",
+		CPUCoreAsString(g_Config.iCpuCore),
+		g_Config.iLockedCPUSpeed);
+
+	ctx->Draw()->DrawTextShadow(ubuntu24, statbuf, x, y, 0xFFFFFFFF);
 }
 
 static void DrawAudioDebugStats(DrawBuffer *draw2d, const Bounds &bounds) {
@@ -1513,7 +1579,7 @@ bool EmuScreen::hasVisibleUI() {
 		return true;
 	if (!osm.IsEmpty() || g_Config.bShowTouchControls || g_Config.iShowFPSCounter != 0)
 		return true;
-	if (g_Config.bEnableCardboardVR)
+	if (g_Config.bEnableCardboardVR || g_Config.bEnableNetworkChat)
 		return true;
 	// Debug UI.
 	if (g_Config.bShowDebugStats || g_Config.bShowDeveloperMenu || g_Config.bShowAudioDebug || g_Config.bShowFrameProfiler)
@@ -1545,11 +1611,12 @@ void EmuScreen::renderUI() {
 	viewport.MinDepth = 0.0;
 	thin3d->SetViewports(1, &viewport);
 
-	DrawBuffer *draw2d = ctx->Draw();
 	if (root_) {
 		UI::LayoutViewHierarchy(*ctx, root_, false);
 		root_->Draw(*ctx);
 	}
+
+	DrawBuffer *draw2d = ctx->Draw();
 
 	if (g_Config.bShowDebugStats && !invalid_) {
 		DrawDebugStats(draw2d, ctx->GetLayoutBounds());
@@ -1573,7 +1640,7 @@ void EmuScreen::renderUI() {
 	}
 
 	if (g_Config.iGPUBackend == (int)GPUBackend::VULKAN && g_Config.bShowGpuProfile) {
-		DrawProfilerVis(ctx, gpu);
+		DrawGPUProfilerVis(ctx, gpu);
 	}
 
 #endif
@@ -1587,7 +1654,7 @@ void EmuScreen::renderUI() {
 	if (coreState == CORE_RUNTIME_ERROR || coreState == CORE_STEPPING) {
 		const ExceptionInfo &info = Core_GetExceptionInfo();
 		if (info.type != ExceptionType::NONE) {
-			DrawCrashDump(draw2d);
+			DrawCrashDump(ctx);
 		}
 	}
 

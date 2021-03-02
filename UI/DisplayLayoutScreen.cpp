@@ -18,15 +18,16 @@
 #include <algorithm>
 #include <vector>
 
-#include "base/colorutil.h"
-#include "base/display.h"
-#include "gfx/texture_atlas.h"
-#include "gfx_es2/draw_buffer.h"
-#include "i18n/i18n.h"
-#include "ui/ui_context.h"
-#include "ui/view.h"
+#include "Common/System/Display.h"
+#include "Common/System/System.h"
+#include "Common/Render/TextureAtlas.h"
+#include "Common/Render/DrawBuffer.h"
+#include "Common/UI/Context.h"
+#include "Common/UI/View.h"
 
-#include "DisplayLayoutScreen.h"
+#include "Common/Data/Color/RGBAUtil.h"
+#include "Common/Data/Text/I18n.h"
+#include "UI/DisplayLayoutScreen.h"
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
 #include "Core/System.h"
@@ -64,7 +65,9 @@ public:
 		: MultiTouchDisplay(img, scale, new UI::AnchorLayoutParams(x * screenBounds.w, y * screenBounds.h, UI::NONE, UI::NONE, true)),
 		x_(x), y_(y), screenBounds_(screenBounds) {
 		UpdateScale(scale);
-	}	
+	}
+
+	std::string DescribeText() const override;
 
 	void SaveDisplayPosition() {
 		x_ = bounds_.centerX() / screenBounds_.w;
@@ -82,6 +85,11 @@ private:
 	float &x_, &y_;
 	const Bounds &screenBounds_;
 };
+
+std::string DragDropDisplay::DescribeText() const {
+	auto u = GetI18NCategory("UI Elements");
+	return u->T("Screen representation");
+}
 
 DisplayLayoutScreen::DisplayLayoutScreen() {
 	// Ignore insets - just couldn't get the logic to work.
@@ -218,8 +226,12 @@ public:
 	Boundary(UI::LayoutParams *layoutParams) : UI::View(layoutParams) {
 	}
 
+	std::string DescribeText() const override {
+		return "";
+	}
+
 	void Draw(UIContext &dc) override {
-		dc.Draw()->DrawImageStretch(dc.theme->whiteImage, bounds_.x, bounds_.y, bounds_.x2(), bounds_.y2(), dc.theme->itemDownStyle.background.color);
+		dc.Draw()->DrawImageCenterTexel(dc.theme->whiteImage, bounds_.x, bounds_.y, bounds_.x2(), bounds_.y2(), dc.theme->itemDownStyle.background.color);
 	}
 };
 

@@ -260,6 +260,9 @@ public:
 	}
 
 protected:
+	void DeviceLost() override;
+	void DeviceRestore() override;
+
 	void SetDrawType(DrawType type, GEPrimitiveType prim) {
 		if (type != lastDraw_) {
 			// We always flush when drawing splines/beziers so no need to do so here
@@ -303,6 +306,8 @@ protected:
 		}
 	}
 
+	size_t FormatGPUStatsCommon(char *buf, size_t size);
+
 	FramebufferManagerCommon *framebufferManager_ = nullptr;
 	TextureCacheCommon *textureCache_ = nullptr;
 	DrawEngineCommon *drawEngineCommon_ = nullptr;
@@ -336,8 +341,8 @@ protected:
 	u32 cycleLastPC;
 	int cyclesExecuted;
 
-	bool dumpNextFrame_;
-	bool dumpThisFrame_;
+	bool dumpNextFrame_ = false;
+	bool dumpThisFrame_ = false;
 	bool debugRecording_;
 	bool interruptsEnabled_;
 	bool resized_ = false;
@@ -363,7 +368,6 @@ private:
 	// Debug stats.
 	double timeSteppingStarted_;
 	double timeSpentStepping_;
-
 	int lastVsync_ = -1;
 };
 

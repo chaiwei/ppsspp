@@ -15,18 +15,18 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#ifdef USING_QT_UI
-#include <QtGui/QImage>
-#else
 #include <png.h>
-#endif
 
 #include <algorithm>
-#include "i18n/i18n.h"
+
 #include "ext/xxhash.h"
-#include "file/ini_file.h"
+
+#include "Common/Data/Text/I18n.h"
+#include "Common/Data/Format/IniFile.h"
+#include "Common/Data/Text/Parsers.h"
 #include "Common/ColorConv.h"
-#include "Common/FileUtil.h"
+#include "Common/File/FileUtil.h"
+#include "Common/StringUtils.h"
 #include "Core/Config.h"
 #include "Core/Host.h"
 #include "Core/System.h"
@@ -76,6 +76,7 @@ bool TextureReplacer::LoadIni() {
 	hash_ = ReplacedTextureHash::QUICK;
 	aliases_.clear();
 	hashranges_.clear();
+	filtering_.clear();
 
 	allowVideo_ = false;
 	ignoreAddress_ = false;
@@ -183,6 +184,14 @@ bool TextureReplacer::LoadIniValues(IniFile &ini, bool isOverride) {
 		}
 	}
 
+	if (ini.HasSection("filtering")) {
+		auto filters = ini.GetOrCreateSection("filtering")->ToMap();
+		// Format: hashname = nearest or linear
+		for (const auto &item : filters) {
+			ParseFiltering(item.first, item.second);
+		}
+	}
+
 	return true;
 }
 
@@ -221,6 +230,23 @@ void TextureReplacer::ParseHashRange(const std::string &key, const std::string &
 	hashranges_[rangeKey] = WidthHeightPair(toW, toH);
 }
 
+void TextureReplacer::ParseFiltering(const std::string &key, const std::string &value) {
+	ReplacementCacheKey itemKey(0, 0);
+	if (sscanf(key.c_str(), "%16llx%8x", &itemKey.cachekey, &itemKey.hash) >= 1) {
+		if (!strcasecmp(value.c_str(), "nearest")) {
+			filtering_[itemKey] = TEX_FILTER_FORCE_NEAREST;
+		} else if (!strcasecmp(value.c_str(), "linear")) {
+			filtering_[itemKey] = TEX_FILTER_FORCE_LINEAR;
+		} else if (!strcasecmp(value.c_str(), "auto")) {
+			filtering_[itemKey] = TEX_FILTER_AUTO;
+		} else {
+			ERROR_LOG(G3D, "Unsupported syntax under [filtering]: %s", value.c_str());
+		}
+	} else {
+		ERROR_LOG(G3D, "Unsupported syntax under [filtering]: %s", key.c_str());
+	}
+}
+
 u32 TextureReplacer::ComputeHash(u32 addr, int bufw, int w, int h, GETextureFormat fmt, u16 maxSeenV) {
 	_dbg_assert_msg_(enabled_, "Replacement not enabled");
 
@@ -244,9 +270,9 @@ u32 TextureReplacer::ComputeHash(u32 addr, int bufw, int w, int h, GETextureForm
 		case ReplacedTextureHash::QUICK:
 			return StableQuickTexHash(checkp, sizeInRAM);
 		case ReplacedTextureHash::XXH32:
-			return DoReliableHash32(checkp, sizeInRAM, 0xBACD7814);
+			return XXH32(checkp, sizeInRAM, 0xBACD7814);
 		case ReplacedTextureHash::XXH64:
-			return DoReliableHash64(checkp, sizeInRAM, 0xBACD7814);
+			return XXH64(checkp, sizeInRAM, 0xBACD7814);
 		default:
 			return 0;
 		}
@@ -267,7 +293,7 @@ u32 TextureReplacer::ComputeHash(u32 addr, int bufw, int w, int h, GETextureForm
 
 		case ReplacedTextureHash::XXH32:
 			for (int y = 0; y < h; ++y) {
-				u32 rowHash = DoReliableHash32(checkp, bytesPerLine, 0xBACD7814);
+				u32 rowHash = XXH32(checkp, bytesPerLine, 0xBACD7814);
 				result = (result * 11) ^ rowHash;
 				checkp += stride;
 			}
@@ -275,7 +301,7 @@ u32 TextureReplacer::ComputeHash(u32 addr, int bufw, int w, int h, GETextureForm
 
 		case ReplacedTextureHash::XXH64:
 			for (int y = 0; y < h; ++y) {
-				u32 rowHash = DoReliableHash64(checkp, bytesPerLine, 0xBACD7814);
+				u32 rowHash = XXH64(checkp, bytesPerLine, 0xBACD7814);
 				result = (result * 11) ^ rowHash;
 				checkp += stride;
 			}
@@ -330,16 +356,6 @@ void TextureReplacer::PopulateReplacement(ReplacedTexture *result, u64 cachekey,
 		level.fmt = ReplacedTextureFormat::F_8888;
 		level.file = filename;
 
-#ifdef USING_QT_UI
-		QImage image(filename.c_str(), "PNG");
-		if (image.isNull()) {
-			ERROR_LOG(G3D, "Could not load texture replacement info: %s", filename.c_str());
-		} else {
-			level.w = (image.width() * w) / newW;
-			level.h = (image.height() * h) / newH;
-			good = true;
-		}
-#else
 		png_image png = {};
 		png.version = PNG_IMAGE_VERSION;
 		FILE *fp = File::OpenCFile(filename, "rb");
@@ -354,7 +370,6 @@ void TextureReplacer::PopulateReplacement(ReplacedTexture *result, u64 cachekey,
 		fclose(fp);
 
 		png_image_free(&png);
-#endif
 
 		if (good && i != 0) {
 			// Check that the mipmap size is correct.  Can't load mips of the wrong size.
@@ -374,19 +389,15 @@ void TextureReplacer::PopulateReplacement(ReplacedTexture *result, u64 cachekey,
 	result->alphaStatus_ = ReplacedTextureAlpha::UNKNOWN;
 }
 
-#ifndef USING_QT_UI
 static bool WriteTextureToPNG(png_imagep image, const std::string &filename, int convert_to_8bit, const void *buffer, png_int_32 row_stride, const void *colormap) {
 	FILE *fp = File::OpenCFile(filename, "wb");
 	if (!fp) {
-		ERROR_LOG(SYSTEM, "Unable to open texture file for writing.");
+		ERROR_LOG(IO, "Unable to open texture file for writing.");
 		return false;
 	}
 
 	if (png_image_write_to_stdio(image, fp, convert_to_8bit, buffer, row_stride, colormap)) {
-		if (fclose(fp) != 0) {
-			ERROR_LOG(SYSTEM, "Texture file write failed.");
-			return false;
-		}
+		fclose(fp);
 		return true;
 	} else {
 		ERROR_LOG(SYSTEM, "Texture PNG encode failed.");
@@ -395,7 +406,6 @@ static bool WriteTextureToPNG(png_imagep image, const std::string &filename, int
 		return false;
 	}
 }
-#endif
 
 void TextureReplacer::NotifyTextureDecoded(const ReplacedTextureDecodeInfo &replacedInfo, const void *data, int pitch, int level, int w, int h) {
 	_assert_msg_(enabled_, "Replacement not enabled");
@@ -459,9 +469,6 @@ void TextureReplacer::NotifyTextureDecoded(const ReplacedTextureDecodeInfo &repl
 		h = lookupH * replacedInfo.scaleFactor;
 	}
 
-#ifdef USING_QT_UI
-	ERROR_LOG(G3D, "Replacement texture saving not implemented for Qt");
-#else
 	if (replacedInfo.fmt != ReplacedTextureFormat::F_8888) {
 		saveBuf.resize((pitch * h) / sizeof(u16));
 		switch (replacedInfo.fmt) {
@@ -512,7 +519,6 @@ void TextureReplacer::NotifyTextureDecoded(const ReplacedTextureDecodeInfo &repl
 	} else if (success) {
 		NOTICE_LOG(G3D, "Saving texture for replacement: %08x / %dx%d", replacedInfo.hash, w, h);
 	}
-#endif
 
 	// Remember that we've saved this for next time.
 	ReplacedTextureLevel saved;
@@ -523,45 +529,74 @@ void TextureReplacer::NotifyTextureDecoded(const ReplacedTextureDecodeInfo &repl
 	savedCache_[replacementKey] = saved;
 }
 
-std::string TextureReplacer::LookupHashFile(u64 cachekey, u32 hash, int level) {
-	ReplacementAliasKey key(cachekey, hash, level);
-	auto alias = aliases_.find(key);
-	if (alias == aliases_.end()) {
-		// Also check for a few more aliases with zeroed portions:
-		// Only clut hash (very dangerous in theory, in practice not more than missing "just" data hash)
-		key.cachekey = cachekey & 0xFFFFFFFFULL;
+template <typename Key, typename Value>
+static typename std::unordered_map<Key, Value>::const_iterator LookupWildcard(const std::unordered_map<Key, Value> &map, Key &key, u64 cachekey, u32 hash, bool ignoreAddress) {
+	auto alias = map.find(key);
+	if (alias != map.end())
+		return alias;
+
+	// Also check for a few more aliases with zeroed portions:
+	// Only clut hash (very dangerous in theory, in practice not more than missing "just" data hash)
+	key.cachekey = cachekey & 0xFFFFFFFFULL;
+	key.hash = 0;
+	alias = map.find(key);
+	if (alias != map.end())
+		return alias;
+
+	if (!ignoreAddress) {
+		// No data hash.
+		key.cachekey = cachekey;
 		key.hash = 0;
-		alias = aliases_.find(key);
-
-		if (!ignoreAddress_ && alias == aliases_.end()) {
-			// No data hash.
-			key.cachekey = cachekey;
-			key.hash = 0;
-			alias = aliases_.find(key);
-		}
-
-		if (alias == aliases_.end()) {
-			// No address.
-			key.cachekey = cachekey & 0xFFFFFFFFULL;
-			key.hash = hash;
-			alias = aliases_.find(key);
-		}
-
-		if (!ignoreAddress_ && alias == aliases_.end()) {
-			// Address, but not clut hash (in case of garbage clut data.)
-			key.cachekey = cachekey & ~0xFFFFFFFFULL;
-			key.hash = hash;
-			alias = aliases_.find(key);
-		}
-
-		if (alias == aliases_.end()) {
-			// Anything with this data hash (a little dangerous.)
-			key.cachekey = 0;
-			key.hash = hash;
-			alias = aliases_.find(key);
-		}
+		alias = map.find(key);
+		if (alias != map.end())
+			return alias;
 	}
 
+	// No address.
+	key.cachekey = cachekey & 0xFFFFFFFFULL;
+	key.hash = hash;
+	alias = map.find(key);
+	if (alias != map.end())
+		return alias;
+
+	if (!ignoreAddress) {
+		// Address, but not clut hash (in case of garbage clut data.)
+		key.cachekey = cachekey & ~0xFFFFFFFFULL;
+		key.hash = hash;
+		alias = map.find(key);
+		if (alias != map.end())
+			return alias;
+	}
+
+	// Anything with this data hash (a little dangerous.)
+	key.cachekey = 0;
+	key.hash = hash;
+	return map.find(key);
+}
+
+bool TextureReplacer::FindFiltering(u64 cachekey, u32 hash, TextureFiltering *forceFiltering) {
+	if (!Enabled() || !g_Config.bReplaceTextures) {
+		return false;
+	}
+
+	ReplacementCacheKey replacementKey(cachekey, hash);
+	auto filter = LookupWildcard(filtering_, replacementKey, cachekey, hash, ignoreAddress_);
+	if (filter == filtering_.end()) {
+		// Allow a global wildcard.
+		replacementKey.cachekey = 0;
+		replacementKey.hash = 0;
+		filter = filtering_.find(replacementKey);
+	}
+	if (filter != filtering_.end()) {
+		*forceFiltering = filter->second;
+		return true;
+	}
+	return false;
+}
+
+std::string TextureReplacer::LookupHashFile(u64 cachekey, u32 hash, int level) {
+	ReplacementAliasKey key(cachekey, hash, level);
+	auto alias = LookupWildcard(aliases_, key, cachekey, hash, ignoreAddress_);
 	if (alias != aliases_.end()) {
 		// Note: this will be blank if explicitly ignored.
 		return alias->second;
@@ -600,34 +635,6 @@ void ReplacedTexture::Load(int level, void *out, int rowPitch) {
 
 	const ReplacedTextureLevel &info = levels_[level];
 
-#ifdef USING_QT_UI
-	QImage image(info.file.c_str(), "PNG");
-	if (image.isNull()) {
-		ERROR_LOG(G3D, "Could not load texture replacement info: %s", info.file.c_str());
-		return;
-	}
-
-	image = image.convertToFormat(QImage::Format_ARGB32);
-	bool alphaFull = true;
-	for (int y = 0; y < image.height(); ++y) {
-		const QRgb *src = (const QRgb *)image.constScanLine(y);
-		uint8_t *outLine = (uint8_t *)out + y * rowPitch;
-		for (int x = 0; x < image.width(); ++x) {
-			outLine[x * 4 + 0] = qRed(src[x]);
-			outLine[x * 4 + 1] = qGreen(src[x]);
-			outLine[x * 4 + 2] = qBlue(src[x]);
-			outLine[x * 4 + 3] = qAlpha(src[x]);
-			// We're already scanning each pixel...
-			if (qAlpha(src[x]) != 255) {
-				alphaFull = false;
-			}
-		}
-	}
-
-	if (level == 0 || !alphaFull) {
-		alphaStatus_ = alphaFull ? ReplacedTextureAlpha::FULL : ReplacedTextureAlpha::UNKNOWN;
-	}
-#else
 	png_image png = {};
 	png.version = PNG_IMAGE_VERSION;
 
@@ -662,7 +669,6 @@ void ReplacedTexture::Load(int level, void *out, int rowPitch) {
 
 	fclose(fp);
 	png_image_free(&png);
-#endif
 }
 
 bool TextureReplacer::GenerateIni(const std::string &gameID, std::string *generatedFilename) {
@@ -698,13 +704,15 @@ bool TextureReplacer::GenerateIni(const std::string &gameID, std::string *genera
 		fs << "[games]\n";
 		fs << "# Used to make it easier to install, and override settings for other regions.\n";
 		fs << "# Files still have to be copied to each TEXTURES folder.";
-		fs << gameID << " = textures.ini\n";
+		fs << gameID << " = " << INI_FILENAME << "\n";
 		fs << "\n";
+		fs << "[hashes]\n";
 		fs << "# Use / for folders not \\, avoid special characters, and stick to lowercase.\n";
 		fs << "# See wiki for more info.\n";
-		fs << "[hashes]\n";
 		fs << "\n";
 		fs << "[hashranges]\n";
+		fs << "\n";
+		fs << "[filtering]\n";
 		fs.close();
 	}
 	return File::Exists(texturesDirectory + INI_FILENAME);

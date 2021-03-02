@@ -17,11 +17,10 @@
 
 #include <thread>
 
-#include "file/file_util.h"
-#include "util/text/utf8.h"
-#include "thread/threadutil.h"
+#include "Common/Data/Encoding/Utf8.h"
+#include "Common/Thread/ThreadUtil.h"
 
-#include "Common/FileUtil.h"
+#include "Common/File/FileUtil.h"
 #include "Common/StringUtils.h"
 #ifdef _WIN32
 #include "Common/CommonWindows.h"
@@ -268,7 +267,7 @@ bool Load_PSP_ISO(FileLoader *fileLoader, std::string *error_string) {
 	if (!pspFileSystem.GetFileInfo(bootpath).exists) {
 		// Can't tell for sure if it's PS1 or PS2, but doesn't much matter.
 		if (pspFileSystem.GetFileInfo("disc0:/SYSTEM.CNF;1").exists || pspFileSystem.GetFileInfo("disc0:/PSX.EXE;1").exists) {
-			*error_string = "PPSSPP plays PSP games, not Playstation 1 or 2 games.";
+			*error_string = "PPSSPP plays PSP games, not PlayStation 1 or 2 games.";
 		} else if (pspFileSystem.GetFileInfo("disc0:/UMD_VIDEO/PLAYLIST.UMD").exists) {
 			*error_string = "PPSSPP doesn't support UMD Video.";
 		} else if (pspFileSystem.GetFileInfo("disc0:/UMD_AUDIO/PLAYLIST.UMD").exists) {

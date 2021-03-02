@@ -1,10 +1,11 @@
 #pragma once
 
-#include <string>
+#include <atomic>
 #include <mutex>
+#include <string>
 #include <vector>
 
-#include "ui/root.h"
+#include "Common/UI/Root.h"
 
 class AT3PlusReader;
 
@@ -13,7 +14,6 @@ public:
 	BackgroundAudio();
 	~BackgroundAudio();
 
-	void Clear(bool hard);
 	void SetGame(const std::string &path);
 	void Update();
 	int Play();
@@ -22,12 +22,15 @@ public:
 	void PlaySFX(UI::UISound sfx);
 
 private:
+	void Clear(bool hard);
+
 	enum {
 		BUFSIZE = 44100,
 	};
 
 	std::mutex mutex_;
 	std::string bgGamePath_;
+	std::atomic<bool> sndLoadPending_;
 	int playbackOffset_ = 0;
 	AT3PlusReader *at3Reader_;
 	double gameLastChanged_ = 0.0;

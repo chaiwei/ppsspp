@@ -20,13 +20,15 @@
 #include <thread>
 #include <mutex>
 
-#include "base/timeutil.h"
-#include "i18n/i18n.h"
-#include "thread/threadutil.h"
-#include "util/text/parsers.h"
+#include "Common/Data/Text/I18n.h"
+#include "Common/Thread/ThreadUtil.h"
+#include "Common/Data/Text/Parsers.h"
 
-#include "Common/FileUtil.h"
-#include "Common/ChunkFile.h"
+#include "Common/File/FileUtil.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
+#include "Common/StringUtils.h"
+#include "Common/TimeUtil.h"
 
 #include "Core/SaveState.h"
 #include "Core/Config.h"
@@ -41,6 +43,7 @@
 #include "Core/HLE/sceDisplay.h"
 #include "Core/HLE/ReplaceTables.h"
 #include "Core/HLE/sceKernel.h"
+#include "Core/HLE/sceUtility.h"
 #include "Core/MemMap.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/MIPS/JitCommon/JitBlockCache.h"
@@ -245,6 +248,7 @@ namespace SaveState
 	};
 
 	static bool needsProcess = false;
+	static bool needsRestart = false;
 	static std::vector<Operation> pending;
 	static std::mutex mutex;
 	static int screenshotFailures = 0;
@@ -261,7 +265,7 @@ namespace SaveState
 	static StateRingbuffer rewindStates(REWIND_NUM_STATES);
 	// TODO: Any reason for this to be configurable?
 	const static float rewindMaxWallFrequency = 1.0f;
-	static float rewindLastTime = 0.0f;
+	static double rewindLastTime = 0.0f;
 	const int StateRingbuffer::BLOCK_SIZE = 8192;
 	const int StateRingbuffer::BASE_USAGE_INTERVAL = 15;
 
@@ -274,11 +278,11 @@ namespace SaveState
 		if (s >= 2) {
 			// This only increments on save, of course.
 			++saveStateGeneration;
-			p.Do(saveStateGeneration);
+			Do(p, saveStateGeneration);
 			// This saves the first git version to create this save state (or generation of save states.)
 			if (saveStateInitialGitVersion.empty())
 				saveStateInitialGitVersion = PPSSPP_GIT_VERSION;
-			p.Do(saveStateInitialGitVersion);
+			Do(p, saveStateInitialGitVersion);
 		} else {
 			saveStateGeneration = 1;
 		}
@@ -616,7 +620,19 @@ namespace SaveState
 			if (File::GetModifTime(fn, time)) {
 				char buf[256];
 				// TODO: Use local time format? Americans and some others might not like ISO standard :)
-				strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &time);
+				switch (g_Config.iDateFormat) {
+				case PSP_SYSTEMPARAM_DATE_FORMAT_YYYYMMDD:
+					strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &time);
+					break;
+				case PSP_SYSTEMPARAM_DATE_FORMAT_MMDDYYYY:
+					strftime(buf, sizeof(buf), "%m-%d-%Y %H:%M:%S", &time);
+					break;
+				case PSP_SYSTEMPARAM_DATE_FORMAT_DDMMYYYY:
+					strftime(buf, sizeof(buf), "%d-%m-%Y %H:%M:%S", &time);
+					break;
+				default: // Should never happen
+					return "";
+				}
 				return std::string(buf);
 			}
 		}
@@ -647,37 +663,27 @@ namespace SaveState
 		}
 
 		// We tried, our only remaining option is to reset the game.
-		PSP_Shutdown();
-		std::string resetError;
-		if (!PSP_Init(PSP_CoreParameter(), &resetError))
-		{
-			ERROR_LOG(BOOT, "Error resetting: %s", resetError.c_str());
-			// TODO: This probably doesn't clean up well enough.
-			Core_Stop();
-			return false;
-		}
-		host->BootDone();
-		host->UpdateDisassembly();
+		needsRestart = true;
+		// Make sure we don't proceed to run anything yet.
+		coreState = CORE_NEXTFRAME;
 		return false;
 	}
 
-#ifndef MOBILE_DEVICE
 	static inline void CheckRewindState()
 	{
 		if (gpuStats.numFlips % g_Config.iRewindFlipFrequency != 0)
 			return;
 
 		// For fast-forwarding, otherwise they may be useless and too close.
-		time_update();
-		float diff = time_now() - rewindLastTime;
+		double now = time_now_d();
+		float diff = now - rewindLastTime;
 		if (diff < rewindMaxWallFrequency)
 			return;
 
-		rewindLastTime = time_now();
-		DEBUG_LOG(BOOT, "saving rewind state");
+		rewindLastTime = now;
+		DEBUG_LOG(BOOT, "Saving rewind state");
 		rewindStates.Save();
 	}
-#endif
 
 	bool HasLoadedState() {
 		return hasLoadedState;
@@ -704,10 +710,8 @@ namespace SaveState
 
 	void Process()
 	{
-#ifndef MOBILE_DEVICE
 		if (g_Config.iRewindFlipFrequency != 0 && gpuStats.numFlips != 0)
 			CheckRewindState();
-#endif
 
 		if (!needsProcess)
 			return;
@@ -885,6 +889,22 @@ namespace SaveState
 		if (operations.size()) {
 			// Avoid triggering frame skipping due to slowdown
 			__DisplaySetWasPaused();
+		}
+	}
+
+	void Cleanup() {
+		if (needsRestart) {
+			PSP_Shutdown();
+			std::string resetError;
+			if (!PSP_Init(PSP_CoreParameter(), &resetError)) {
+				ERROR_LOG(BOOT, "Error resetting: %s", resetError.c_str());
+				// TODO: This probably doesn't clean up well enough.
+				Core_Stop();
+				return;
+			}
+			host->BootDone();
+			host->UpdateDisassembly();
+			needsRestart = false;
 		}
 	}
 

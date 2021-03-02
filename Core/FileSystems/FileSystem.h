@@ -20,8 +20,9 @@
 #include <vector>
 #include <string>
 #include <cstring>
-#include "base/basictypes.h"
+#include <ctime>
 
+#include "Common.h"
 #include "Core/HLE/sceKernel.h"
 
 enum FileAccess {

@@ -40,14 +40,15 @@ int sceKernelDelaySysClockThreadCB(u32 sysclockAddr);
 void __KernelStopThread(SceUID threadID, int exitStatus, const char *reason);
 u32 __KernelDeleteThread(SceUID threadID, int exitStatus, const char *reason);
 int sceKernelDeleteThread(int threadHandle);
-void sceKernelExitDeleteThread(int exitStatus);
-void sceKernelExitThread(int exitStatus);
+int sceKernelExitDeleteThread(int exitStatus);
+int sceKernelExitThread(int exitStatus);
 void _sceKernelExitThread(int exitStatus);
 SceUID sceKernelGetThreadId();
 int sceKernelGetThreadCurrentPriority();
 // Warning: will alter v0 in current MIPS state.
 int __KernelStartThread(SceUID threadToStartID, int argSize, u32 argBlockPtr, bool forceArgs = false);
 int __KernelStartThreadValidate(SceUID threadToStartID, int argSize, u32 argBlockPtr, bool forceArgs = false);
+int __KernelGetThreadExitStatus(SceUID threadID);
 int sceKernelStartThread(SceUID threadToStartID, int argSize, u32 argBlockPtr);
 u32 sceKernelSuspendDispatchThread();
 u32 sceKernelResumeDispatchThread(u32 suspended);
@@ -57,6 +58,7 @@ u32 sceKernelReferThreadRunStatus(u32 uid, u32 statusPtr);
 int sceKernelReleaseWaitThread(SceUID threadID);
 int sceKernelChangeCurrentThreadAttr(u32 clearAttr, u32 setAttr);
 int sceKernelRotateThreadReadyQueue(int priority);
+int KernelRotateThreadReadyQueue(int priority);
 int sceKernelCheckThreadStack();
 int sceKernelSuspendThread(SceUID threadID);
 int sceKernelResumeThread(SceUID threadID);
@@ -107,6 +109,8 @@ enum WaitType : int
 	WAITTYPE_VMEM         = 22,
 	WAITTYPE_ASYNCIO      = 23,
 	WAITTYPE_MICINPUT     = 24, // fake
+	WAITTYPE_NET          = 25, // fake
+	WAITTYPE_USB          = 26, // fake
 
 	NUM_WAITTYPES
 };
@@ -170,6 +174,7 @@ u32 __KernelGetCurThreadStack();
 u32 __KernelGetCurThreadStackStart();
 const char *__KernelGetThreadName(SceUID threadID);
 bool KernelIsThreadDormant(SceUID threadID);
+bool KernelIsThreadWaiting(SceUID threadID);
 
 void __KernelSaveContext(PSPThreadContext *ctx, bool vfpuEnabled);
 void __KernelLoadContext(PSPThreadContext *ctx, bool vfpuEnabled);

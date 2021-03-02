@@ -113,7 +113,7 @@ template <class T> void SafeRelease(T **ppT) {
 
 class WindowsCaptureDevice;
 
-class ReaderCallback : public IMFSourceReaderCallback {
+class ReaderCallback final : public IMFSourceReaderCallback {
 public:
 	ReaderCallback(WindowsCaptureDevice *device);
 	~ReaderCallback();
@@ -171,8 +171,8 @@ public:
 
 protected:
 	WindowsCaptureDevice *device;
-	SwsContext *img_convert_ctx;
-	SwrContext *resample_ctx;
+	SwsContext *img_convert_ctx = nullptr;
+	SwrContext *resample_ctx = nullptr;
 };
 
 class WindowsCaptureDevice {
@@ -194,11 +194,11 @@ public:
 
 	void setError(const CAPTUREDEVIDE_ERROR &newError, const std::string &newErrorMessage) { error = newError; errorMessage = newErrorMessage; }
 	void setSelction(const UINT32 &selection) { param.selection = selection; }
-	void updateState(const CAPTUREDEVIDE_STATE &newState) { state = newState; }
 	HRESULT setDeviceParam(IMFMediaType *pType);
 
 	bool isShutDown() const { return state == CAPTUREDEVIDE_STATE::SHUTDOWN; }
 	bool isStarted() const { return state == CAPTUREDEVIDE_STATE::STARTED; }
+	void waitShutDown();
 
 	void sendMessage(CAPTUREDEVIDE_MESSAGE message);
 	CAPTUREDEVIDE_MESSAGE getMessage();
@@ -210,7 +210,8 @@ public:
 	friend class ReaderCallback;
 
 protected:
-// Handle message here.
+	void updateState(const CAPTUREDEVIDE_STATE &newState);
+	// Handle message here.
 	void messageHandler();
 
 	CAPTUREDEVIDE_TYPE type;
@@ -222,12 +223,12 @@ protected:
 	CAPTUREDEVIDE_ERROR error;
 	std::string errorMessage;
 
-	bool isDeviceChanged;
+	bool isDeviceChanged = false;
 
 // MF interface.
-	ReaderCallback *m_pCallback;
-	IMFSourceReader *m_pReader;
-	IMFMediaSource *m_pSource;
+	ReaderCallback *m_pCallback = nullptr;
+	IMFSourceReader *m_pReader = nullptr;
+	IMFMediaSource *m_pSource = nullptr;
 
 // Message loop.
 	std::mutex mutex;
@@ -239,17 +240,18 @@ protected:
 
 // Param updating synchronously.
 	std::mutex paramMutex;
+	std::mutex stateMutex_;
+	std::condition_variable stateCond_;
 
 // Camera only
-	unsigned char *imageRGB;
-	int imgRGBLineSizes[4];
-	unsigned char *imageJpeg;
-	int imgJpegSize;
+	unsigned char *imageRGB = nullptr;
+	int imgRGBLineSizes[4]{};
+	unsigned char *imageJpeg = nullptr;
+	int imgJpegSize = 0;
 
 //Microphone only
-	u8 *resampleBuf;
-	u32 resampleBufSize;
-	QueueBuf *rawAudioBuf;
+	u8 *resampleBuf = nullptr;
+	u32 resampleBufSize = 0;
 };
 
 extern WindowsCaptureDevice *winCamera;

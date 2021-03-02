@@ -16,21 +16,24 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include <string>
-#include "base/display.h"
+
 // TODO: For text align flags, probably shouldn't be in gfx_es2/...
-#include "gfx_es2/draw_buffer.h"
-#include "i18n/i18n.h"
-#include "thin3d/thin3d.h"
-#include "ui/ui_context.h"
+#include "Common/Render/DrawBuffer.h"
+#include "Common/GPU/thin3d.h"
+#include "Common/UI/Context.h"
 #include "UI/PauseScreen.h"
 #include "UI/ReportScreen.h"
 
+#include "Common/Data/Text/I18n.h"
+#include "Common/File/FileUtil.h"
+#include "Common/Log.h"
+#include "Common/StringUtils.h"
+#include "Common/System/Display.h"
+#include "Common/System/System.h"
 #include "Core/Core.h"
 #include "Core/Reporting.h"
 #include "Core/Screenshot.h"
 #include "Core/System.h"
-#include "Common/FileUtil.h"
-#include "Common/Log.h"
 
 using namespace UI;
 
@@ -192,6 +195,7 @@ void ReportScreen::update() {
 		}
 	}
 	UIDialogScreenWithGameBackground::update();
+	UpdateCRCInfo();
 }
 
 void ReportScreen::resized() {
@@ -266,13 +270,18 @@ void ReportScreen::CreateViews() {
 	}
 
 #ifdef MOBILE_DEVICE
-	if (!Core_GetPowerSaving()) {
+	if (!Core_GetPowerSaving() && !Reporting::HasCRC(gamePath_)) {
 		auto crcWarning = new TextView(rp->T("FeedbackIncludeCRC", "Note: Battery will be used to send a disc CRC"), FLAG_WRAP_TEXT, false, new LinearLayoutParams(Margins(12, 5, 0, 5)));
 		crcWarning->SetShadow(true);
 		crcWarning->SetEnabledPtr(&enableReporting_);
 		leftColumnItems->Add(crcWarning);
 	}
 #endif
+
+	crcInfo_ = new TextView("", FLAG_WRAP_TEXT, false, new LinearLayoutParams(Margins(12, 5, 0, 5)));
+	crcInfo_->SetShadow(true);
+	crcInfo_->SetVisibility(V_GONE);
+	leftColumnItems->Add(crcInfo_);
 
 	if (tookScreenshot_ && !screenshotFilename_.empty()) {
 		leftColumnItems->Add(new CheckBox(&includeScreenshot_, rp->T("FeedbackIncludeScreen", "Include a screenshot")))->SetEnabledPtr(&enableReporting_);
@@ -289,7 +298,7 @@ void ReportScreen::CreateViews() {
 	overallDescription_->SetShadow(true);
 
 	UI::Orientation ratingsOrient = leftColumnWidth >= 750.0f ? ORIENT_HORIZONTAL : ORIENT_VERTICAL;
-	UI::LinearLayout *ratingsHolder = new LinearLayout(ratingsOrient, new LinearLayoutParams(WRAP_CONTENT, WRAP_CONTENT));
+	UI::LinearLayout *ratingsHolder = new LinearLayoutList(ratingsOrient, new LinearLayoutParams(WRAP_CONTENT, WRAP_CONTENT));
 	leftColumnItems->Add(ratingsHolder);
 	ratingsHolder->Add(new RatingChoice("Graphics", &graphics_))->SetEnabledPtr(&ratingEnabled_)->OnChoice.Handle(this, &ReportScreen::HandleChoice);
 	ratingsHolder->Add(new RatingChoice("Speed", &speed_))->SetEnabledPtr(&ratingEnabled_)->OnChoice.Handle(this, &ReportScreen::HandleChoice);
@@ -297,6 +306,8 @@ void ReportScreen::CreateViews() {
 
 	rightColumnItems->SetSpacing(0.0f);
 	rightColumnItems->Add(new Choice(rp->T("Open Browser")))->OnClick.Handle(this, &ReportScreen::HandleBrowser);
+	showCrcButton_ = new Choice(rp->T("Show disc CRC"));
+	rightColumnItems->Add(showCrcButton_)->OnClick.Handle(this, &ReportScreen::HandleShowCRC);
 	submit_ = new Choice(rp->T("Submit Feedback"));
 	rightColumnItems->Add(submit_)->OnClick.Handle(this, &ReportScreen::HandleSubmit);
 	UpdateSubmit();
@@ -311,10 +322,30 @@ void ReportScreen::CreateViews() {
 
 	leftColumn->Add(leftColumnItems);
 	rightColumn->Add(rightColumnItems);
+
+	UpdateCRCInfo();
 }
 
 void ReportScreen::UpdateSubmit() {
 	submit_->SetEnabled(enableReporting_ && overall_ != ReportingOverallScore::INVALID && graphics_ >= 0 && speed_ >= 0 && gameplay_ >= 0);
+}
+
+void ReportScreen::UpdateCRCInfo() {
+	auto rp = GetI18NCategory("Reporting");
+	std::string updated;
+
+	if (Reporting::HasCRC(gamePath_)) {
+		std::string crc = StringFromFormat("%08X", Reporting::RetrieveCRC(gamePath_));
+		updated = ReplaceAll(rp->T("FeedbackCRCValue", "Disc CRC: [VALUE]"), "[VALUE]", crc);
+	} else if (showCRC_) {
+		updated = rp->T("FeedbackCRCCalculating", "Disc CRC: Calculating...");
+	}
+
+	if (!updated.empty()) {
+		crcInfo_->SetText(updated);
+		crcInfo_->SetVisibility(V_VISIBLE);
+		showCrcButton_->SetEnabled(false);
+	}
 }
 
 void ReportScreen::UpdateOverallDescription() {
@@ -360,6 +391,12 @@ EventReturn ReportScreen::HandleSubmit(EventParams &e) {
 EventReturn ReportScreen::HandleBrowser(EventParams &e) {
 	const std::string url = "https://" + Reporting::ServerHost() + "/";
 	LaunchBrowser(url.c_str());
+	return EVENT_DONE;
+}
+
+EventReturn ReportScreen::HandleShowCRC(EventParams &e) {
+	Reporting::QueueCRC(gamePath_);
+	showCRC_ = true;
 	return EVENT_DONE;
 }
 

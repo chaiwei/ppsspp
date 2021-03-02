@@ -17,9 +17,9 @@
 
 #include <cmath>
 
-#include "math/math_util.h"
-
 #include "Common/CPUDetect.h"
+#include "Common/Data/Convert/SmallDataConvert.h"
+#include "Common/Math/math_util.h"
 #include "Core/Compatibility.h"
 #include "Core/Config.h"
 #include "Core/MemMap.h"
@@ -36,7 +36,7 @@
 // All functions should have CONDITIONAL_DISABLE, so we can narrow things down to a file quickly.
 // Currently known non working ones should have DISABLE.
 
-// #define CONDITIONAL_DISABLE { Comp_Generic(op); return; }
+// #define CONDITIONAL_DISABLE(flag) { Comp_Generic(op); return; }
 #define CONDITIONAL_DISABLE(flag) if (opts.disableFlags & (uint32_t)JitDisable::flag) { Comp_Generic(op); return; }
 #define DISABLE { Comp_Generic(op); return; }
 #define INVALIDOP { Comp_Generic(op); return; }
@@ -993,7 +993,7 @@ namespace MIPSComp {
 						ir.Write(IROp::AndConst, IRTEMP_0, rt, ir.AddConstant(mask));
 						ir.Write(IROp::SetCtrlVFPUReg, imm - 128, IRTEMP_0);
 					} else {
-						ir.Write(IROp::SetCtrlVFPU, imm - 128, rt);
+						ir.Write(IROp::SetCtrlVFPUReg, imm - 128, rt);
 					}
 				}
 
@@ -1502,7 +1502,6 @@ namespace MIPSComp {
 		memcpy(srcregs, sregs, sizeof(sregs));
 		memcpy(tempregs, dregs, sizeof(dregs));
 
-		int n = GetNumVectorElements(sz);
 		int nOut = GetNumVectorElements(outsize);
 
 		// If src registers aren't contiguous, make them.
@@ -1778,7 +1777,7 @@ namespace MIPSComp {
 		// Vector integer immediate
 		// d[0] = float(imm)
 
-		s32 imm = (s32)(s16)(u16)(op & 0xFFFF);
+		s32 imm = SignExtend16ToS32(op);
 		u8 dreg;
 		GetVectorRegsPrefixD(&dreg, V_Single, _VT);
 		ir.Write(IROp::SetConstF, dreg, ir.AddConstantFloat((float)imm));
@@ -1818,7 +1817,7 @@ namespace MIPSComp {
 		int n = GetNumVectorElements(sz);
 
 		u8 dregs[4];
-		GetVectorRegsPrefixD(dregs, sz, _VD);
+		GetVectorRegsPrefixD(dregs, sz, vd);
 		for (int i = 0; i < n; i++) {
 			ir.Write(IROp::SetConstF, dregs[i], ir.AddConstantFloat(cst_constants[conNum]));
 		}

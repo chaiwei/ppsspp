@@ -1,16 +1,17 @@
 #include <algorithm>
-#include <cassert>
 #include <cctype>
 #include <cstdint>
-#include "i18n/i18n.h"
+#include "Common/Data/Text/I18n.h"
 #include "Common/StringUtils.h"
-#include "Common/ChunkFile.h"
-#include "Common/FileUtil.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
+#include "Common/File/FileUtil.h"
 #include "Core/CoreTiming.h"
 #include "Core/CoreParameter.h"
 #include "Core/CwCheat.h"
 #include "Core/Config.h"
 #include "Core/Host.h"
+#include "Core/MemMapHelpers.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/ELF/ParamSFO.h"
 #include "Core/System.h"
@@ -19,7 +20,7 @@
 #include "GPU/Common/PostShader.h"
 
 #ifdef _WIN32
-#include "util/text/utf8.h"
+#include "Common/Data/Encoding/Utf8.h"
 #endif
 
 static int CheatEvent = -1;
@@ -301,10 +302,12 @@ void __CheatShutdown() {
 void __CheatDoState(PointerWrap &p) {
 	auto s = p.Section("CwCheat", 0, 2);
 	if (!s) {
+		CheatEvent = -1;
+		CoreTiming::RestoreRegisterEvent(CheatEvent, "CheatEvent", &hleCheat);
 		return;
 	}
 
-	p.Do(CheatEvent);
+	Do(p, CheatEvent);
 	CoreTiming::RestoreRegisterEvent(CheatEvent, "CheatEvent", &hleCheat);
 
 	if (s < 2) {
@@ -776,7 +779,7 @@ CheatOperation CWCheatEngine::InterpretNextCwCheat(const CheatCode &cheat, size_
 
 CheatOperation CWCheatEngine::InterpretNextTempAR(const CheatCode &cheat, size_t &i) {
 	// TODO
-	assert(false);
+	_assert_(false);
 	return { CheatOp::Invalid };
 }
 
@@ -785,9 +788,13 @@ CheatOperation CWCheatEngine::InterpretNextOp(const CheatCode &cheat, size_t &i)
 		return InterpretNextCwCheat(cheat, i);
 	else if (cheat.fmt == CheatCodeFormat::TEMPAR)
 		return InterpretNextTempAR(cheat, i);
-	else
-		assert(false);
-	return { CheatOp::Invalid };
+	else {
+		// This shouldn't happen, but apparently does: #14082
+		// Either I'm missing a path or we have memory corruption.
+		// Not sure whether to log here though, feels like we could end up with a
+		// ton of logspam...
+		return { CheatOp::Invalid };
+	}
 }
 
 void CWCheatEngine::ApplyMemoryOperator(const CheatOperation &op, uint32_t(*oper)(uint32_t, uint32_t)) {
@@ -918,7 +925,7 @@ void CWCheatEngine::ExecuteOp(const CheatOperation &op, const CheatCode &cheat, 
 			InvalidateICache(op.addr, op.val);
 			InvalidateICache(op.copyBytesFrom.destAddr, op.val);
 
-			Memory::MemcpyUnchecked(op.copyBytesFrom.destAddr, op.addr, op.val);
+			Memory::Memcpy(op.copyBytesFrom.destAddr, op.addr, op.val, "CwCheat");
 		}
 		break;
 
@@ -950,7 +957,7 @@ void CWCheatEngine::ExecuteOp(const CheatOperation &op, const CheatCode &cheat, 
 
 	case CheatOp::PostShader:
 		{
-			auto shaderChain = GetPostShaderChain(g_Config.sPostShaderName);
+			auto shaderChain = GetFullPostShadersChain(g_Config.vPostShaderNames);
 			if (op.PostShaderUniform.shader < shaderChain.size()) {
 				std::string shaderName = shaderChain[op.PostShaderUniform.shader]->section;
 				if (shaderName != "Off")
@@ -961,7 +968,7 @@ void CWCheatEngine::ExecuteOp(const CheatOperation &op, const CheatCode &cheat, 
 
 	case CheatOp::PostShaderFromMemory:
 		{
-			auto shaderChain = GetPostShaderChain(g_Config.sPostShaderName);
+			auto shaderChain = GetFullPostShadersChain(g_Config.vPostShaderNames);
 			if (Memory::IsValidAddress(op.addr) && op.PostShaderUniform.shader < shaderChain.size()) {
 				union {
 					float f;
@@ -1100,7 +1107,7 @@ void CWCheatEngine::ExecuteOp(const CheatOperation &op, const CheatCode &cheat, 
 						if (Memory::IsValidRange(dstAddr, val) && Memory::IsValidRange(srcAddr, val)) {
 							InvalidateICache(dstAddr, val);
 							InvalidateICache(srcAddr, val);
-							Memory::MemcpyUnchecked(dstAddr, srcAddr, val);
+							Memory::Memcpy(dstAddr, srcAddr, val, "CwCheat");
 						}
 						// Don't perform any further action.
 						type = -1;
@@ -1177,7 +1184,7 @@ void CWCheatEngine::ExecuteOp(const CheatOperation &op, const CheatCode &cheat, 
 		break;
 
 	default:
-		assert(false);
+		_assert_(false);
 	}
 }
 

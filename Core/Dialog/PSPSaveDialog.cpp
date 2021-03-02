@@ -16,16 +16,22 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #ifdef __MINGW32__
+#include <unistd.h>
+#ifndef _POSIX_THREAD_SAFE_FUNCTIONS
 #define _POSIX_THREAD_SAFE_FUNCTIONS 200112L
 #endif
+#endif
 
+#include <ctime>
 #include <thread>
 
-#include "i18n/i18n.h"
-#include "thread/threadutil.h"
+#include "Common/Data/Text/I18n.h"
+#include "Common/Thread/ThreadUtil.h"
 
-#include "Common/ChunkFile.h"
-
+#include "Common/File/FileUtil.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
+#include "Common/StringUtils.h"
 #include "Core/FileSystems/MetaFileSystem.h"
 #include "Core/Util/PPGeDraw.h"
 #include "Core/HLE/sceCtrl.h"
@@ -50,12 +56,7 @@ const static int SAVEDATA_DIALOG_SIZE_V2 = 1500;
 const static int SAVEDATA_DIALOG_SIZE_V3 = 1536;
 
 
-PSPSaveDialog::PSPSaveDialog()
-	: PSPDialog()
-	, display(DS_NONE)
-	, currentSelectedSave(0)
-	, ioThread(0)
-{
+PSPSaveDialog::PSPSaveDialog(UtilityDialogType type) : PSPDialog(type) {
 	param.SetPspParam(0);
 }
 
@@ -127,13 +128,21 @@ int PSPSaveDialog::Init(int paramAddr)
 		break;
 	}
 
+	if(!param.wouldHasMultiSaveName(param.GetPspParam()))
+		currentSelectedSave = 0;
+
 	switch ((SceUtilitySavedataType)(u32)param.GetPspParam()->mode)
 	{
 		case SCE_UTILITY_SAVEDATA_TYPE_LOAD:
 			DEBUG_LOG(SCEUTILITY, "Loading. Title: %s Save: %s File: %s", param.GetGameName(param.GetPspParam()).c_str(), param.GetSaveName(param.GetPspParam()).c_str(), param.GetFileName(param.GetPspParam()).c_str());
-			if (param.GetFileInfo(0).size != 0)
-				display = DS_LOAD_CONFIRM;
-			else
+			if (param.GetFileInfo(0).size != 0) {
+				if (param.GetFileInfo(0).broken) {
+					param.GetPspParam()->common.result = SCE_UTILITY_SAVEDATA_ERROR_LOAD_DATA_BROKEN;
+					display = DS_LOAD_FAILED;
+				} else {
+					display = DS_LOAD_CONFIRM;
+				}
+			} else
 				display = DS_LOAD_NODATA;
 			break;
 		case SCE_UTILITY_SAVEDATA_TYPE_AUTOLOAD:
@@ -169,7 +178,7 @@ int PSPSaveDialog::Init(int paramAddr)
 			DEBUG_LOG(SCEUTILITY, "Saving. Title: %s Save: %s File: %s", param.GetGameName(param.GetPspParam()).c_str(), param.GetGameName(param.GetPspParam()).c_str(), param.GetFileName(param.GetPspParam()).c_str());
 			display = DS_SAVE_LIST_CHOICE;
 			break;
-		case SCE_UTILITY_SAVEDATA_TYPE_LISTDELETE:
+		case SCE_UTILITY_SAVEDATA_TYPE_LISTALLDELETE:
 			DEBUG_LOG(SCEUTILITY, "Delete. Title: %s Save: %s File: %s", param.GetGameName(param.GetPspParam()).c_str(), param.GetGameName(param.GetPspParam()).c_str(), param.GetFileName(param.GetPspParam()).c_str());
 			if(param.GetFilenameCount() == 0)
 				display = DS_DELETE_NODATA;
@@ -180,7 +189,6 @@ int PSPSaveDialog::Init(int paramAddr)
 		case SCE_UTILITY_SAVEDATA_TYPE_LIST:
 		case SCE_UTILITY_SAVEDATA_TYPE_FILES:
 		case SCE_UTILITY_SAVEDATA_TYPE_GETSIZE:
-		case SCE_UTILITY_SAVEDATA_TYPE_SINGLEDELETE:
 		case SCE_UTILITY_SAVEDATA_TYPE_MAKEDATASECURE:
 		case SCE_UTILITY_SAVEDATA_TYPE_MAKEDATA:
 		case SCE_UTILITY_SAVEDATA_TYPE_WRITEDATASECURE:
@@ -191,8 +199,26 @@ int PSPSaveDialog::Init(int paramAddr)
 			display = DS_NONE;
 			break;
 
-		case SCE_UTILITY_SAVEDATA_TYPE_DELETE: // When run on a PSP, displays a list of all saves on the PSP. Weird. (Not really, it's to let you free up space)
-			display = DS_DELETE_LIST_CHOICE;
+		case SCE_UTILITY_SAVEDATA_TYPE_DELETE:
+			DEBUG_LOG(SCEUTILITY, "Delete. Title: %s Save: %s File: %s", param.GetGameName(param.GetPspParam()).c_str(), param.GetGameName(param.GetPspParam()).c_str(), param.GetFileName(param.GetPspParam()).c_str());
+			if (param.GetFileInfo(0).size != 0) {
+				yesnoChoice = 0;
+				display = DS_DELETE_CONFIRM;
+			} else
+				display = DS_DELETE_NODATA;
+			break;
+
+		case SCE_UTILITY_SAVEDATA_TYPE_AUTODELETE:
+			DEBUG_LOG(SCEUTILITY, "Delete. Title: %s Save: %s File: %s", param.GetGameName(param.GetPspParam()).c_str(), param.GetGameName(param.GetPspParam()).c_str(), param.GetFileName(param.GetPspParam()).c_str());
+			display = DS_NONE;
+			break;
+
+		case SCE_UTILITY_SAVEDATA_TYPE_LISTDELETE: 
+			DEBUG_LOG(SCEUTILITY, "Delete. Title: %s Save: %s File: %s", param.GetGameName(param.GetPspParam()).c_str(), param.GetGameName(param.GetPspParam()).c_str(), param.GetFileName(param.GetPspParam()).c_str());
+			if (param.GetFilenameCount() == 0)
+				display = DS_DELETE_NODATA;
+			else
+				display = DS_DELETE_LIST_CHOICE;
 			break;
 		default:
 		{
@@ -256,6 +282,8 @@ const std::string PSPSaveDialog::GetSelectedSaveDirName() const
 	case SCE_UTILITY_SAVEDATA_TYPE_AUTOLOAD:
 	case SCE_UTILITY_SAVEDATA_TYPE_SAVE:
 	case SCE_UTILITY_SAVEDATA_TYPE_AUTOSAVE:
+	case SCE_UTILITY_SAVEDATA_TYPE_AUTODELETE:
+	case SCE_UTILITY_SAVEDATA_TYPE_DELETE:
 		return param.GetSaveDirName(param.GetPspParam());
 
 	case SCE_UTILITY_SAVEDATA_TYPE_MAKEDATASECURE:
@@ -268,8 +296,6 @@ const std::string PSPSaveDialog::GetSelectedSaveDirName() const
 	case SCE_UTILITY_SAVEDATA_TYPE_ERASE:
 	case SCE_UTILITY_SAVEDATA_TYPE_DELETEDATA:
 		return param.GetSaveDirName(param.GetPspParam());
-
-	// TODO: Maybe also SINGLEDELETE/etc?
 
 	// SIZES ignores saveName it seems.
 
@@ -304,7 +330,7 @@ void PSPSaveDialog::DisplayBanner(int which)
 		break;
 	}
 	// TODO: Draw a hexagon icon
-	PPGeDrawImage(10, 6, 12.0f, 12.0f, 1, 10, 1, 10, 10, 10, textStyle.color);
+	PPGeDrawImage(10, 6, 12.0f, 12.0f, 1, 10, 1, 10, 10, 10, FadedImageStyle());
 	PPGeDrawText(title, 30, 11, textStyle);
 }
 
@@ -313,16 +339,15 @@ void PSPSaveDialog::DisplaySaveList(bool canMove) {
 	static int upFramesHeld = 0;
 	static int downFramesHeld = 0;
 
-	for (int displayCount = 0; displayCount < param.GetFilenameCount(); displayCount++)
-	{
-		int textureColor = 0xFFFFFFFF;
+	for (int displayCount = 0; displayCount < param.GetFilenameCount(); displayCount++) {
+		PPGeImageStyle imageStyle = FadedImageStyle();
 		auto fileInfo = param.GetFileInfo(displayCount);
 
 		if (fileInfo.size == 0 && fileInfo.texture != NULL)
-			textureColor = 0xFF777777;
+			imageStyle.color = CalcFadedColor(0xFF777777);
 
 		// Calc save image position on screen
-		float w, h , x, b;
+		float w, h, x;
 		float y = 97;
 		if (displayCount != currentSelectedSave) {
 			w = 81;
@@ -332,11 +357,6 @@ void PSPSaveDialog::DisplaySaveList(bool canMove) {
 			w = 144;
 			h = 80;
 			x = 27;
-			b = 1.2f;
-			PPGeDrawRect(x-b, y-b, x+w+b, y, CalcFadedColor(0xD0FFFFFF)); // top border
-			PPGeDrawRect(x-b, y, x, y+h, CalcFadedColor(0xD0FFFFFF)); // left border
-			PPGeDrawRect(x-b, y+h, x+w+b, y+h+b, CalcFadedColor(0xD0FFFFFF)); //bottom border
-			PPGeDrawRect(x+w, y, x+w+b, y+h, CalcFadedColor(0xD0FFFFFF)); //right border
 		}
 		if (displayCount < currentSelectedSave)
 			y -= 13 + 45 * (currentSelectedSave - displayCount);
@@ -347,13 +367,27 @@ void PSPSaveDialog::DisplaySaveList(bool canMove) {
 		if (y > 472.0f || y < -200.0f)
 			continue;
 
-		int tw = 256;
-		int th = 256;
-		if (fileInfo.texture != NULL) {
+		int pad = 0;
+		if (fileInfo.texture != nullptr) {
 			fileInfo.texture->SetTexture();
-			tw = fileInfo.texture->Width();
-			th = fileInfo.texture->Height();
-			PPGeDrawImage(x, y, w, h, 0, 0, 1, 1, tw, th, textureColor);
+			int tw = fileInfo.texture->Width();
+			int th = fileInfo.texture->Height();
+			float scale = (float)h / (float)th;
+			int scaledW = (int)(tw * scale);
+			pad = (w - scaledW) / 2;
+			w = scaledW;
+
+			PPGeDrawImage(x + pad, y, w, h, 0, 0, 1, 1, tw, th, imageStyle);
+		} else {
+			PPGeDrawRect(x, y, x + w, y + h, 0x88666666);
+		}
+		if (displayCount == currentSelectedSave) {
+			float b = 1.2f;
+			uint32_t bc = CalcFadedColor(0xD0FFFFFF);
+			PPGeDrawRect(x + pad - b, y - b, x + pad + w + b, y, bc); // top border
+			PPGeDrawRect(x + pad - b, y, x + pad, y + h, bc); // left border
+			PPGeDrawRect(x + pad - b, y + h, x + pad + w + b, y + h + b, bc); //bottom border
+			PPGeDrawRect(x + pad + w, y, x + pad + w + b, y + h, bc); //right border
 		}
 		PPGeSetDefaultTexture();
 	}
@@ -370,11 +404,11 @@ void PSPSaveDialog::DisplaySaveList(bool canMove) {
 void PSPSaveDialog::DisplaySaveIcon(bool checkExists)
 {
 	std::lock_guard<std::mutex> guard(paramLock);
-	int textureColor = CalcFadedColor(0xFFFFFFFF);
+	PPGeImageStyle imageStyle = FadedImageStyle();
 	auto curSave = param.GetFileInfo(currentSelectedSave);
 
 	if (curSave.size == 0 && checkExists)
-		textureColor = CalcFadedColor(0xFF777777);
+		imageStyle.color = CalcFadedColor(0xFF777777);
 
 	// Calc save image position on screen
 	float w = 144;
@@ -388,10 +422,14 @@ void PSPSaveDialog::DisplaySaveIcon(bool checkExists)
 		curSave.texture->SetTexture();
 		tw = curSave.texture->Width();
 		th = curSave.texture->Height();
+		float scale = (float)h / (float)th;
+		int scaledW = (int)(tw * scale);
+		x += (w - scaledW) / 2;
+		w = scaledW;
 	} else {
 		PPGeDisableTexture();
 	}
-	PPGeDrawImage(x, y, w, h, 0, 0, 1, 1, tw, th, textureColor);
+	PPGeDrawImage(x, y, w, h, 0, 0, 1, 1, tw, th, imageStyle);
 	PPGeSetDefaultTexture();
 }
 
@@ -437,8 +475,14 @@ static void FormatSaveDate(char *date, size_t sz, const tm &t) {
 void PSPSaveDialog::DisplaySaveDataInfo1() {
 	std::lock_guard<std::mutex> guard(paramLock);
 	const SaveFileInfo &saveInfo = param.GetFileInfo(currentSelectedSave);
+	PPGeStyle saveTitleStyle = FadedStyle(PPGeAlign::BOX_LEFT, 0.55f);
 
-	if (saveInfo.size == 0) {
+	if (saveInfo.broken) {
+		auto di = GetI18NCategory("Dialog");
+		PPGeStyle textStyle = FadedStyle(PPGeAlign::BOX_VCENTER, 0.6f);
+		PPGeDrawText(di->T("Corrupted Data"), 180, 136, textStyle);
+		PPGeDrawText(saveInfo.title, 175, 159, saveTitleStyle);
+	} else if (saveInfo.size == 0) {
 		auto di = GetI18NCategory("Dialog");
 		PPGeStyle textStyle = FadedStyle(PPGeAlign::BOX_VCENTER, 0.6f);
 		PPGeDrawText(di->T("NEW DATA"), 180, 136, textStyle);
@@ -458,7 +502,6 @@ void PSPSaveDialog::DisplaySaveDataInfo1() {
 		std::string saveDetailTxt = saveInfo.saveDetail;
 
 		PPGeStyle titleStyle = FadedStyle(PPGeAlign::BOX_BOTTOM, 0.6f);
-		PPGeStyle saveTitleStyle = FadedStyle(PPGeAlign::BOX_LEFT, 0.55f);
 		titleStyle.color = CalcFadedColor(0xFFC0C0C0);
 		PPGeStyle textStyle = FadedStyle(PPGeAlign::BOX_LEFT, 0.5f);
 
@@ -708,7 +751,7 @@ int PSPSaveDialog::Update(int animSpeed)
 			StartDraw();
 
 			DisplaySaveIcon(true);
-			DisplaySaveDataInfo2(true);
+			DisplaySaveDataInfo2();
 
 			DisplayMessage(di->T("Save completed"));
 
@@ -788,7 +831,7 @@ int PSPSaveDialog::Update(int animSpeed)
 			DisplaySaveIcon(true);
 			DisplaySaveDataInfo2();
 
-			DisplayMessage(di->T("LoadingFailed", "Unable to load data."));
+			DisplayMessage(di->T("LoadingFailed", "Load failed\nThe data is corrupted."));
 
 			DisplayButtons(DS_BUTTON_CANCEL);
 			DisplayBanner(DB_LOAD);
@@ -798,7 +841,6 @@ int PSPSaveDialog::Update(int animSpeed)
 				if (param.GetPspParam()->mode != SCE_UTILITY_SAVEDATA_TYPE_LOAD) {
 					display = DS_LOAD_LIST_CHOICE;
 				} else {
-					param.GetPspParam()->common.result = SCE_UTILITY_DIALOG_RESULT_CANCEL;
 					StartFade(false);
 				}
 			}
@@ -877,15 +919,16 @@ int PSPSaveDialog::Update(int animSpeed)
 			DisplayButtons(DS_BUTTON_OK | DS_BUTTON_CANCEL);
 			DisplayBanner(DB_DELETE);
 
-			if (IsButtonPressed(cancelButtonFlag))
-				display = DS_DELETE_LIST_CHOICE;
-			else if (IsButtonPressed(okButtonFlag)) {
-				if (yesnoChoice == 0)
+			if (IsButtonPressed(cancelButtonFlag) || (IsButtonPressed(okButtonFlag) && yesnoChoice == 0)) {
+				if(param.GetPspParam()->mode == SCE_UTILITY_SAVEDATA_TYPE_LISTDELETE || param.GetPspParam()->mode == SCE_UTILITY_SAVEDATA_TYPE_LISTALLDELETE)
 					display = DS_DELETE_LIST_CHOICE;
 				else {
+					param.GetPspParam()->common.result = SCE_UTILITY_DIALOG_RESULT_CANCEL;
+					StartFade(false);
+				}
+			} else if (IsButtonPressed(okButtonFlag)) {
 					display = DS_DELETE_DELETING;
 					StartIOThread();
-				}
 			}
 
 			EndDraw();
@@ -913,7 +956,10 @@ int PSPSaveDialog::Update(int animSpeed)
 			DisplayBanner(DB_DELETE);
 
 			if (IsButtonPressed(cancelButtonFlag)) {
-				display = DS_DELETE_LIST_CHOICE;
+				if (param.GetPspParam()->mode == SCE_UTILITY_SAVEDATA_TYPE_LISTDELETE || param.GetPspParam()->mode == SCE_UTILITY_SAVEDATA_TYPE_LISTALLDELETE)
+					display = DS_DELETE_LIST_CHOICE;
+				else
+					StartFade(false);
 			}
 
 			EndDraw();
@@ -933,8 +979,14 @@ int PSPSaveDialog::Update(int animSpeed)
 			if (IsButtonPressed(cancelButtonFlag)) {
 				if (param.GetFilenameCount() == 0)
 					display = DS_DELETE_NODATA;
-				else
+				else if (param.GetPspParam()->mode == SCE_UTILITY_SAVEDATA_TYPE_LISTDELETE || param.GetPspParam()->mode == SCE_UTILITY_SAVEDATA_TYPE_LISTALLDELETE) {
+					if (currentSelectedSave > param.GetFilenameCount() - 1)
+						currentSelectedSave = param.GetFilenameCount() - 1;
 					display = DS_DELETE_LIST_CHOICE;
+				} else {
+					param.GetPspParam()->common.result = SCE_UTILITY_DIALOG_RESULT_SUCCESS;
+					StartFade(false);
+				}
 			}
 
 			EndDraw();
@@ -974,17 +1026,19 @@ int PSPSaveDialog::Update(int animSpeed)
 		break;
 	}
 
-	if (status == SCE_UTILITY_STATUS_FINISHED || pendingStatus == SCE_UTILITY_STATUS_FINISHED)
-		Memory::Memcpy(requestAddr, &request, request.common.size);
+	if (ReadStatus() == SCE_UTILITY_STATUS_FINISHED || pendingStatus == SCE_UTILITY_STATUS_FINISHED)
+		Memory::Memcpy(requestAddr, &request, request.common.size, "SaveDialogParam");
 	
 	return 0;
 }
 
 void PSPSaveDialog::ExecuteIOAction() {
+	auto &result = param.GetPspParam()->common.result;
 	std::lock_guard<std::mutex> guard(paramLock);
 	switch (display) {
 	case DS_LOAD_LOADING:
-		if (param.Load(param.GetPspParam(), GetSelectedSaveDirName(), currentSelectedSave) == 0) {
+		result = param.Load(param.GetPspParam(), GetSelectedSaveDirName(), currentSelectedSave);
+		if (result == 0) {
 			display = DS_LOAD_DONE;
 		} else {
 			display = DS_LOAD_FAILED;
@@ -998,9 +1052,11 @@ void PSPSaveDialog::ExecuteIOAction() {
 		}
 		break;
 	case DS_DELETE_DELETING:
-		if (param.Delete(param.GetPspParam(),currentSelectedSave)) {
+		if (param.Delete(param.GetPspParam(), currentSelectedSave)) {
+			result = 0;
 			display = DS_DELETE_DONE;
 		} else {
+			//result = SCE_UTILITY_SAVEDATA_ERROR_DELETE_NO_DATA;// What the result should be?
 			display = DS_DELETE_FAILED;
 		}
 		break;
@@ -1053,10 +1109,14 @@ void PSPSaveDialog::ExecuteNotVisibleIOAction() {
 		break;
 	case SCE_UTILITY_SAVEDATA_TYPE_DELETEDATA:
 		DEBUG_LOG(SCEUTILITY, "sceUtilitySavedata DELETEDATA: %s", param.GetPspParam()->saveName);
-		result = param.DeleteData(param.GetPspParam());
+		if (param.Delete(param.GetPspParam(), param.GetSelectedSave())) {
+			result = 0;
+		} else {
+			result = SCE_UTILITY_SAVEDATA_ERROR_RW_NO_DATA;
+		}
 		break;
-	//case SCE_UTILITY_SAVEDATA_TYPE_AUTODELETE:
-	case SCE_UTILITY_SAVEDATA_TYPE_SINGLEDELETE:
+	case SCE_UTILITY_SAVEDATA_TYPE_AUTODELETE:
+	case SCE_UTILITY_SAVEDATA_TYPE_DELETE:
 		if (param.Delete(param.GetPspParam(), param.GetSelectedSave())) {
 			result = 0;
 		} else {
@@ -1077,15 +1137,13 @@ void PSPSaveDialog::ExecuteNotVisibleIOAction() {
 		break;
 	case SCE_UTILITY_SAVEDATA_TYPE_READDATA:
 	case SCE_UTILITY_SAVEDATA_TYPE_READDATASECURE:
-		if (!param.IsSaveDirectoryExist(param.GetPspParam())){
+		result = param.Load(param.GetPspParam(), GetSelectedSaveDirName(), currentSelectedSave, param.GetPspParam()->mode == SCE_UTILITY_SAVEDATA_TYPE_READDATASECURE);
+		if(result == SCE_UTILITY_SAVEDATA_ERROR_LOAD_NO_DATA)
 			result = SCE_UTILITY_SAVEDATA_ERROR_RW_NO_DATA;
-		} else if (!param.IsSfoFileExist(param.GetPspParam())) {
-			result = SCE_UTILITY_SAVEDATA_ERROR_RW_DATA_BROKEN;
-		} else if (param.Load(param.GetPspParam(), GetSelectedSaveDirName(), currentSelectedSave, param.GetPspParam()->mode == SCE_UTILITY_SAVEDATA_TYPE_READDATASECURE) == 0) {
-			result = 0;
-		} else {
-			result = SCE_UTILITY_SAVEDATA_ERROR_RW_FILE_NOT_FOUND;
-		}
+		break;
+	case SCE_UTILITY_SAVEDATA_TYPE_ERASE:
+	case SCE_UTILITY_SAVEDATA_TYPE_ERASESECURE:
+		result = param.DeleteData(param.GetPspParam());
 		break;
 	default:
 		break;
@@ -1140,20 +1198,20 @@ void PSPSaveDialog::DoState(PointerWrap &p) {
 		return;
 	}
 
-	p.Do(display);
+	Do(p, display);
 	param.DoState(p);
-	p.Do(request);
+	Do(p, request);
 	// Just reset it.
 	bool hasParam = param.GetPspParam() != NULL;
-	p.Do(hasParam);
+	Do(p, hasParam);
 	if (hasParam) {
 		param.SetPspParam(&request);
 	}
-	p.Do(requestAddr);
-	p.Do(currentSelectedSave);
-	p.Do(yesnoChoice);
+	Do(p, requestAddr);
+	Do(p, currentSelectedSave);
+	Do(p, yesnoChoice);
 	if (s > 2) {
-		p.Do(ioThreadStatus);
+		Do(p, ioThreadStatus);
 	} else {
 		ioThreadStatus = SAVEIO_NONE;
 	}

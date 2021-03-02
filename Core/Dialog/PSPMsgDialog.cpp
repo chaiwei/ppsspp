@@ -16,16 +16,17 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include <algorithm>
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
+#include "Common/StringUtils.h"
 #include "Core/Dialog/PSPMsgDialog.h"
 #include "Core/Dialog/PSPSaveDialog.h"
 #include "Core/Util/PPGeDraw.h"
 #include "Core/HLE/sceCtrl.h"
 #include "Core/MemMapHelpers.h"
 #include "Core/Reporting.h"
-#include "Common/ChunkFile.h"
-#include "Common/StringUtils.h"
-#include "i18n/i18n.h"
-#include "util/text/utf8.h"
+#include "Common/Data/Text/I18n.h"
+#include "Common/Data/Encoding/Utf8.h"
 
 static const float FONT_SCALE = 0.65f;
 
@@ -34,10 +35,7 @@ static const float FONT_SCALE = 0.65f;
 const static int MSG_INIT_DELAY_US = 300000;
 const static int MSG_SHUTDOWN_DELAY_US = 26000;
 
-PSPMsgDialog::PSPMsgDialog()
-	: PSPDialog()
-	, flag(0)
-{
+PSPMsgDialog::PSPMsgDialog(UtilityDialogType type) : PSPDialog(type) {
 }
 
 PSPMsgDialog::~PSPMsgDialog() {
@@ -148,11 +146,11 @@ int PSPMsgDialog::Init(unsigned int paramAddr) {
 
 
 void PSPMsgDialog::FormatErrorCode(uint32_t code) {
-	auto di = GetI18NCategory("Dialog");
+	auto err = GetI18NCategory("Dialog");
 
 	switch (code) {
 	case SCE_UTILITY_SAVEDATA_ERROR_LOAD_DATA_BROKEN:
-		snprintf(msgText, 512, "%s (%08x)", di->T("MsgErrorSavedataDataBroken", "Save data was corrupt."), code);
+		snprintf(msgText, 512, "%s (%08x)", err->T("MsgErrorSavedataDataBroken", "Save data was corrupt."), code);
 		break;
 
 	case SCE_UTILITY_SAVEDATA_ERROR_LOAD_NO_MS:
@@ -160,23 +158,23 @@ void PSPMsgDialog::FormatErrorCode(uint32_t code) {
 	case SCE_UTILITY_SAVEDATA_ERROR_SAVE_NO_MS:
 	case SCE_UTILITY_SAVEDATA_ERROR_DELETE_NO_MS:
 	case SCE_UTILITY_SAVEDATA_ERROR_SIZES_NO_MS:
-		snprintf(msgText, 512, "%s (%08x)", di->T("MsgErrorSavedataNoMS", "Memory stick not inserted."), code);
+		snprintf(msgText, 512, "%s (%08x)", err->T("MsgErrorSavedataNoMS", "Memory stick not inserted."), code);
 		break;
 
 	case SCE_UTILITY_SAVEDATA_ERROR_LOAD_NO_DATA:
 	case SCE_UTILITY_SAVEDATA_ERROR_RW_NO_DATA:
 	case SCE_UTILITY_SAVEDATA_ERROR_DELETE_NO_DATA:
 	case SCE_UTILITY_SAVEDATA_ERROR_SIZES_NO_DATA:
-		snprintf(msgText, 512, "%s (%08x)", di->T("MsgErrorSavedataNoData", "Warning: no save data was found."), code);
+		snprintf(msgText, 512, "%s (%08x)", err->T("MsgErrorSavedataNoData", "Warning: no save data was found."), code);
 		break;
 
 	case SCE_UTILITY_SAVEDATA_ERROR_RW_MEMSTICK_FULL:
 	case SCE_UTILITY_SAVEDATA_ERROR_SAVE_MS_NOSPACE:
-		snprintf(msgText, 512, "%s (%08x)", di->T("MsgErrorSavedataMSFull", "Memory stick full.  Check your storage space."), code);
+		snprintf(msgText, 512, "%s (%08x)", err->T("MsgErrorSavedataMSFull", "Memory stick full.  Check your storage space."), code);
 		break;
 
 	default:
-		snprintf(msgText, 512, "%s %08x", di->T("MsgErrorCode", "Error code:"), code);
+		snprintf(msgText, 512, "%s %08x", err->T("MsgErrorCode", "Error code:"), code);
 	}
 }
 
@@ -343,7 +341,7 @@ int PSPMsgDialog::Update(int animSpeed) {
 		messageDialog.result = 0;
 	}
 
-	Memory::Memcpy(messageDialogAddr, &messageDialog ,messageDialog.common.size);
+	Memory::Memcpy(messageDialogAddr, &messageDialog, messageDialog.common.size, "MsgDialogParam");
 	return 0;
 }
 
@@ -378,11 +376,11 @@ void PSPMsgDialog::DoState(PointerWrap &p)
 	if (!s)
 		return;
 
-	p.Do(flag);
-	p.Do(messageDialog);
-	p.Do(messageDialogAddr);
-	p.DoArray(msgText, sizeof(msgText));
-	p.Do(yesnoChoice);
+	Do(p, flag);
+	Do(p, messageDialog);
+	Do(p, messageDialogAddr);
+	DoArray(p, msgText, sizeof(msgText));
+	Do(p, yesnoChoice);
 
 	// We don't save state this, you'll just have to scroll down again.
 	if (p.mode == p.MODE_READ) {

@@ -17,15 +17,18 @@
 
 #include <cmath>
 
-#include "math/math_util.h"
+#include "Common/Data/Convert/SmallDataConvert.h"
+#include "Common/Math/math_util.h"
 
-#include "Common/Common.h"
+#include "Common/BitSet.h"
 #include "Common/BitScan.h"
+#include "Common/Common.h"
 #include "Core/Config.h"
 #include "Core/Core.h"
 #include "Core/Host.h"
 #include "Core/MemMap.h"
 #include "Core/MIPS/MIPS.h"
+#include "Core/MIPS/MIPSCodeUtils.h"
 #include "Core/MIPS/MIPSInt.h"
 #include "Core/MIPS/MIPSTables.h"
 #include "Core/Reporting.h"
@@ -101,6 +104,8 @@ namespace MIPSInt
 		// issue the cache instruction at that interval.
 
 		// These codes might be PSP-specific, they don't match regular MIPS cache codes very well
+
+		// NOTE: If you add support for more, make sure they are handled in the various Jit::Comp_Cache.
 		switch (func) {
 		// Icache
 		case 8:
@@ -292,10 +297,9 @@ namespace MIPSInt
 
 	void Int_IType(MIPSOpcode op)
 	{
-		s32 simm = (s32)(s16)(op & 0xFFFF);
-		u32 uimm = (u32)(u16)(op & 0xFFFF);
-
-		u32 suimm = (u32)simm;
+		u32 uimm = op & 0xFFFF;
+		u32 suimm = SignExtend16ToU32(op);
+		s32 simm = SignExtend16ToS32(op);
 
 		int rt = _RT;
 		int rs = _RS;
@@ -360,7 +364,6 @@ namespace MIPSInt
 		int rt = _RT;
 		int rs = _RS;
 		int rd = _RD;
-		static bool has_warned = false;
 
 		// Don't change $zr.
 		if (rd == 0)
@@ -408,8 +411,8 @@ namespace MIPSInt
 
 		switch (op >> 26) 
 		{
-		case 32: R(rt) = (u32)(s32)(s8) Memory::Read_U8(addr); break; //lb
-		case 33: R(rt) = (u32)(s32)(s16)Memory::Read_U16(addr); break; //lh
+		case 32: R(rt) = SignExtend8ToU32(Memory::Read_U8(addr)); break; //lb
+		case 33: R(rt) = SignExtend16ToU32(Memory::Read_U16(addr)); break; //lh
 		case 35: R(rt) = Memory::Read_U32(addr); break; //lw
 		case 36: R(rt) = Memory::Read_U8 (addr); break; //lbu
 		case 37: R(rt) = Memory::Read_U16(addr); break; //lhu
@@ -735,7 +738,7 @@ namespace MIPSInt
 		switch((op>>6)&31)
 		{
 		case 16: // seb
-			R(rd) = (u32)(s32)(s8)(u8)R(rt);
+			R(rd) = SignExtend8ToU32(R(rt));
 			break;
 
 		case 20: // bitrev
@@ -753,7 +756,7 @@ namespace MIPSInt
 			break;
 
 		case 24: // seh
-			R(rd) = (u32)(s32)(s16)(u16)R(rt);
+			R(rd) = SignExtend16ToU32(R(rt));
 			break;
 
 		default:

@@ -16,7 +16,7 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include <shlwapi.h>
-#include "thread/threadutil.h"
+#include "Common/Thread/ThreadUtil.h"
 #include "CaptureDevice.h"
 #include "BufferLock.h"
 #include "ext/jpge/jpge.h"
@@ -106,18 +106,20 @@ AudioFormatTransform g_AudioFormats[] = {
 const int g_cVideoFormats = ARRAYSIZE(g_VideoFormats);
 const int g_cAudioFormats = ARRAYSIZE(g_AudioFormats);
 
-MediaParam defaultVideoParam = { 640, 480,  0, MFVideoFormat_RGB24 };
-MediaParam defaultAudioParam = { 44100, 2, 16, MFAudioFormat_PCM };
+MediaParam defaultVideoParam = { { 640, 480,  0, MFVideoFormat_RGB24 } };
+MediaParam defaultAudioParam = { { 44100, 2, 16, MFAudioFormat_PCM } };
 
 HRESULT GetDefaultStride(IMFMediaType *pType, LONG *plStride);
 
-ReaderCallback::ReaderCallback(WindowsCaptureDevice *device): img_convert_ctx(nullptr), resample_ctx(nullptr){
-	this->device = device;
-}
+ReaderCallback::ReaderCallback(WindowsCaptureDevice *_device) : device(_device) {}
 
 ReaderCallback::~ReaderCallback() {
-	sws_freeContext(img_convert_ctx);
-	swr_free(&resample_ctx);
+	if (img_convert_ctx) {
+		sws_freeContext(img_convert_ctx);
+	}
+	if (resample_ctx) {
+		swr_free(&resample_ctx);
+	}
 }
 
 HRESULT ReaderCallback::QueryInterface(REFIID riid, void** ppv)
@@ -223,26 +225,14 @@ HRESULT ReaderCallback::OnReadSample(
 			DWORD length = 0;
 			u32 sizeAfterResample = 0;
 			// pSample can be null, in this case ReadSample still should be called to request next frame.
-			if (pSample && Microphone::isNeedInput()) {
+			if (pSample) {
 				pBuffer->Lock(&sampleBuf, nullptr, &length);
-				if (!device->rawAudioBuf) {
-					device->rawAudioBuf = new QueueBuf(length * 2); // Alloc enough space.
-				}
-				device->rawAudioBuf->push(sampleBuf, length);
 				if (device->needResample()) {
-					sizeAfterResample = device->rawAudioBuf->getAvailableSize() * device->targetMediaParam.sampleRate / device->deviceParam.sampleRate / device->deviceParam.channels;
-					// Wait until have enough audio data.
-					if (sizeAfterResample + Microphone::availableAudioBufSize() >= Microphone::numNeedSamples() * 2) {
-						u32 rawAudioBufSize = device->rawAudioBuf->getAvailableSize();
-						u8 *tempbuf = new u8[rawAudioBufSize];
-						device->rawAudioBuf->pop(tempbuf, rawAudioBufSize);
-						sizeAfterResample = doResample(
-							&device->resampleBuf, device->targetMediaParam.sampleRate, device->targetMediaParam.channels, &device->resampleBufSize,
-							tempbuf, device->deviceParam.sampleRate, device->deviceParam.channels, device->deviceParam.audioFormat, rawAudioBufSize, device->deviceParam.bitsPerSample);
-						delete[] tempbuf;
-						if (device->resampleBuf)
-							Microphone::addAudioData(device->resampleBuf, sizeAfterResample);
-					}		
+					sizeAfterResample = doResample(
+						&device->resampleBuf, device->targetMediaParam.sampleRate, device->targetMediaParam.channels, &device->resampleBufSize,
+						sampleBuf, device->deviceParam.sampleRate, device->deviceParam.channels, device->deviceParam.audioFormat, length, device->deviceParam.bitsPerSample);
+					if (device->resampleBuf)
+						Microphone::addAudioData(device->resampleBuf, sizeAfterResample);	
 				} else {
 					Microphone::addAudioData(sampleBuf, length);
 				}
@@ -439,23 +429,12 @@ u32 ReaderCallback::doResample(u8 **dst, u32 &dstSampleRate, u32 &dstChannels, u
 	return av_samples_get_buffer_size(nullptr, dstChannels, outSamplesCount, AV_SAMPLE_FMT_S16, 0);
 }
 
-WindowsCaptureDevice::WindowsCaptureDevice(CAPTUREDEVIDE_TYPE type) :
-	type(type),
-	m_pCallback(nullptr),
-	m_pSource(nullptr),
-	m_pReader(nullptr),
-	imageRGB(nullptr),
-	imageJpeg(nullptr),
-	imgJpegSize(0),
-	resampleBuf(nullptr),
-	resampleBufSize(0),
-	rawAudioBuf(nullptr),
+WindowsCaptureDevice::WindowsCaptureDevice(CAPTUREDEVIDE_TYPE _type) :
+	type(_type),
 	error(CAPTUREDEVIDE_ERROR_NO_ERROR),
-	errorMessage(""),
-	isDeviceChanged(false),
 	state(CAPTUREDEVIDE_STATE::UNINITIALIZED) {
 	param = { 0 };
-	deviceParam = { 0 };
+	deviceParam = { { 0 } };
 
 	switch (type) {
 	case CAPTUREDEVIDE_TYPE::VIDEO:
@@ -478,10 +457,10 @@ WindowsCaptureDevice::~WindowsCaptureDevice() {
 		break;
 	case CAPTUREDEVIDE_TYPE::AUDIO:
 		av_freep(&resampleBuf);
-		delete rawAudioBuf;
 		break;
 	}
 }
+
 void WindowsCaptureDevice::CheckDevices() {
 	isDeviceChanged = true;
 }
@@ -858,7 +837,6 @@ void WindowsCaptureDevice::sendMessage(CAPTUREDEVIDE_MESSAGE message) {
 	// Must be unique lock
 	std::unique_lock<std::mutex> lock(mutex);
 	messageQueue.push(message);
-	lock.unlock();
 	cond.notify_one();
 }
 
@@ -869,9 +847,25 @@ CAPTUREDEVIDE_MESSAGE WindowsCaptureDevice::getMessage() {
 	cond.wait(lock, [this]() { return !messageQueue.empty(); });
 	message = messageQueue.front();
 	messageQueue.pop();
-	lock.unlock();
 
 	return message;
+}
+
+void WindowsCaptureDevice::updateState(const CAPTUREDEVIDE_STATE &newState) {
+	state = newState;
+	if (isShutDown()) {
+		std::unique_lock<std::mutex> guard(stateMutex_);
+		stateCond_.notify_all();
+	}
+}
+
+void WindowsCaptureDevice::waitShutDown() {
+	sendMessage({ CAPTUREDEVIDE_COMMAND::SHUTDOWN, nullptr });
+
+	std::unique_lock<std::mutex> guard(stateMutex_);
+	while (!isShutDown()) {
+		stateCond_.wait(guard);
+	}
 }
 
 void WindowsCaptureDevice::messageHandler() {

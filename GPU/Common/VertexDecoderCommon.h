@@ -18,11 +18,12 @@
 #pragma once
 
 #include <cstring>
+
 #include "ppsspp_config.h"
-#include "base/basictypes.h"
-#include "Common/Hashmaps.h"
+
+#include "Common/Common.h"
+#include "Common/Data/Collections/Hashmaps.h"
 #include "Common/Log.h"
-#include "Common/CommonTypes.h"
 #include "Core/Reporting.h"
 #include "GPU/ge_constants.h"
 #include "GPU/Common/ShaderCommon.h"
@@ -92,8 +93,8 @@ private:
 	union {
 		const void *indices;
 		const u8 *indices8;
-		const u16 *indices16;
-		const u32 *indices32;
+		const u16_le *indices16;
+		const u32_le *indices32;
 	};
 	u32 indexType;
 

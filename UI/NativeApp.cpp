@@ -30,6 +30,7 @@
 
 #include <locale.h>
 #include <algorithm>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -43,41 +44,46 @@
 #include "Windows/CaptureDevice.h"
 #endif
 
-#include "base/display.h"
-#include "base/timeutil.h"
-#include "base/logging.h"
-#include "base/NativeApp.h"
-#include "file/vfs.h"
-#include "file/zip_read.h"
-#include "net/http_client.h"
-#include "net/resolve.h"
-#include "gfx/texture_atlas.h"
-#include "gfx_es2/draw_text.h"
-#include "gfx_es2/gpu_features.h"
-#include "i18n/i18n.h"
-#include "input/input_state.h"
-#include "math/fast/fast_math.h"
-#include "math/math_util.h"
-#include "math/lin/matrix4x4.h"
-#include "profiler/profiler.h"
-#include "thin3d/thin3d.h"
-#include "ui/ui.h"
-#include "ui/screen.h"
-#include "ui/ui_context.h"
-#include "ui/view.h"
-#include "util/text/utf8.h"
+#include "Common/Net/HTTPClient.h"
+#include "Common/Net/Resolve.h"
+#include "Common/Render/TextureAtlas.h"
+#include "Common/Render/Text/draw_text.h"
+#include "Common/GPU/OpenGL/GLFeatures.h"
+#include "Common/GPU/thin3d.h"
+#include "Common/UI/UI.h"
+#include "Common/UI/Screen.h"
+#include "Common/UI/Context.h"
+#include "Common/UI/View.h"
+#include "android/jni/app-android.h"
 
+#include "Common/System/Display.h"
+#include "Common/System/System.h"
+#include "Common/System/NativeApp.h"
+#include "Common/Data/Text/I18n.h"
+#include "Common/Input/InputState.h"
+#include "Common/Math/fast/fast_math.h"
+#include "Common/Math/math_util.h"
+#include "Common/Math/lin/matrix4x4.h"
+#include "Common/Profiler/Profiler.h"
+#include "Common/Data/Encoding/Utf8.h"
+#include "Common/File/VFS/VFS.h"
+#include "Common/File/VFS/AssetReader.h"
 #include "Common/CPUDetect.h"
-#include "Common/FileUtil.h"
+#include "Common/File/FileUtil.h"
+#include "Common/TimeUtil.h"
+#include "Common/StringUtils.h"
 #include "Common/LogManager.h"
 #include "Common/MemArena.h"
 #include "Common/GraphicsContext.h"
 #include "Common/OSVersion.h"
+#include "Common/GPU/ShaderTranslation.h"
+
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
 #include "Core/Core.h"
 #include "Core/FileLoaders/DiskCachingFileLoader.h"
 #include "Core/Host.h"
+#include "Core/KeyMap.h"
 #include "Core/Reporting.h"
 #include "Core/SaveState.h"
 #include "Core/Screenshot.h"
@@ -90,8 +96,8 @@
 #include "Core/Util/GameManager.h"
 #include "Core/Util/AudioFormat.h"
 #include "Core/WebServer.h"
-#include "GPU/GPUInterface.h"
 
+#include "GPU/GPUInterface.h"
 #include "UI/BackgroundAudio.h"
 #include "UI/ControlMappingScreen.h"
 #include "UI/DiscordIntegration.h"
@@ -104,10 +110,6 @@
 #include "UI/RemoteISOScreen.h"
 #include "UI/TiltEventProcessor.h"
 #include "UI/TextureUtil.h"
-
-#if !defined(MOBILE_DEVICE)
-#include "Common/KeyMap.h"
-#endif
 
 #if !defined(MOBILE_DEVICE) && defined(USING_QT_UI)
 #include "Qt/QtHost.h"
@@ -125,9 +127,9 @@ static UI::Theme ui_theme;
 
 Atlas g_ui_atlas;
 
-#if defined(ARM) && defined(__ANDROID__)
+#if PPSSPP_ARCH(ARM) && defined(__ANDROID__)
 #include "../../android/jni/ArmEmitterTest.h"
-#elif defined(ARM64) && defined(__ANDROID__)
+#elif PPSSPP_ARCH(ARM64) && defined(__ANDROID__)
 #include "../../android/jni/Arm64EmitterTest.h"
 #endif
 
@@ -137,22 +139,16 @@ Atlas g_ui_atlas;
 #include <mach-o/dyld.h>
 #endif
 
-// https://github.com/richq/android-ndk-profiler
-#ifdef ANDROID_NDK_PROFILER
-#include <stdlib.h>
-#include "android/android-ndk-profiler/prof.h"
-#endif
-
 ScreenManager *screenManager;
 std::string config_filename;
 
 // Really need to clean this mess of globals up... but instead I add more :P
 bool g_TakeScreenshot;
+bool g_ShaderNameListChanged = false;
 static bool isOuya;
 static bool resized = false;
 static bool restarting = false;
 
-static bool askedForStoragePermission = false;
 static int renderCounter = 0;
 
 struct PendingMessage {
@@ -180,7 +176,7 @@ WindowsAudioBackend *winAudioBackend;
 
 std::thread *graphicsLoadThread;
 
-class AndroidLogger : public LogListener {
+class PrintfLogger : public LogListener {
 public:
 	void Log(const LogMessage &message) override {
 		// Log with simplified headers as Android already provides timestamp etc.
@@ -188,17 +184,17 @@ public:
 		case LogTypes::LVERBOSE:
 		case LogTypes::LDEBUG:
 		case LogTypes::LINFO:
-			ILOG("[%s] %s", message.log, message.msg.c_str());
+			printf("INFO [%s] %s", message.log, message.msg.c_str());
 			break;
 		case LogTypes::LERROR:
-			ELOG("[%s] %s", message.log, message.msg.c_str());
+			printf("ERR  [%s] %s", message.log, message.msg.c_str());
 			break;
 		case LogTypes::LWARNING:
-			WLOG("[%s] %s", message.log, message.msg.c_str());
+			printf("WARN [%s] %s", message.log, message.msg.c_str());
 			break;
 		case LogTypes::LNOTICE:
 		default:
-			ILOG("[%s] !!! %s", message.log, message.msg.c_str());
+			printf("NOTE [%s] !!! %s", message.log, message.msg.c_str());
 			break;
 		}
 	}
@@ -211,7 +207,7 @@ int Win32Mix(short *buffer, int numSamples, int bits, int rate, int channels) {
 #endif
 
 // globals
-static AndroidLogger *logger = nullptr;
+static LogListener *logger = nullptr;
 std::string boot_filename = "";
 
 void NativeHost::InitSound() {
@@ -234,7 +230,7 @@ void QtHost::ShutdownSound() { }
 std::string NativeQueryConfig(std::string query) {
 	char temp[128];
 	if (query == "screenRotation") {
-		ILOG("g_Config.screenRotation = %d", g_Config.iScreenRotation);
+		INFO_LOG(G3D, "g_Config.screenRotation = %d", g_Config.iScreenRotation);
 		snprintf(temp, sizeof(temp), "%d", g_Config.iScreenRotation);
 		return std::string(temp);
 	} else if (query == "immersiveMode") {
@@ -291,9 +287,9 @@ void NativeGetAppInfo(std::string *app_dir_name, std::string *app_nice_name, boo
 	*landscape = true;
 	*version = PPSSPP_GIT_VERSION;
 
-#if defined(ARM) && defined(__ANDROID__)
+#if PPSSPP_ARCH(ARM) && defined(__ANDROID__)
 	ArmEmitterTest();
-#elif defined(ARM64) && defined(__ANDROID__)
+#elif PPSSPP_ARCH(ARM64) && defined(__ANDROID__)
 	Arm64EmitterTest();
 #endif
 }
@@ -354,13 +350,14 @@ static void PostLoadConfig() {
 void CreateDirectoriesAndroid() {
 	// On Android, create a PSP directory tree in the external_dir,
 	// to hopefully reduce confusion a bit.
-	ILOG("Creating %s", (g_Config.memStickDirectory + "PSP").c_str());
+	INFO_LOG(IO, "Creating %s", (g_Config.memStickDirectory + "PSP").c_str());
 	File::CreateFullPath(g_Config.memStickDirectory + "PSP");
 	File::CreateFullPath(GetSysDirectory(DIRECTORY_SAVEDATA));
 	File::CreateFullPath(GetSysDirectory(DIRECTORY_SAVESTATE));
 	File::CreateFullPath(GetSysDirectory(DIRECTORY_GAME));
 	File::CreateFullPath(GetSysDirectory(DIRECTORY_SYSTEM));
 	File::CreateFullPath(GetSysDirectory(DIRECTORY_TEXTURES));
+	File::CreateFullPath(GetSysDirectory(DIRECTORY_PLUGINS));
 
 	// Avoid media scanners in PPSSPP_STATE and SAVEDATA directories,
 	// and in the root PSP directory as well.
@@ -368,12 +365,13 @@ void CreateDirectoriesAndroid() {
 	File::CreateEmptyFile(GetSysDirectory(DIRECTORY_SAVEDATA) + ".nomedia");
 	File::CreateEmptyFile(GetSysDirectory(DIRECTORY_SYSTEM) + ".nomedia");
 	File::CreateEmptyFile(GetSysDirectory(DIRECTORY_TEXTURES) + ".nomedia");
+	File::CreateEmptyFile(GetSysDirectory(DIRECTORY_PLUGINS) + ".nomedia");
 }
 
 static void CheckFailedGPUBackends() {
 #ifdef _DEBUG
 	// If you're in debug mode, you probably don't want a fallback. If you're in release mode, use IGNORE below.
-	WARN_LOG(LOADER, "Not checking for failed graphics backends in debug mode");
+	NOTICE_LOG(LOADER, "Not checking for failed graphics backends in debug mode");
 	return;
 #endif
 
@@ -441,13 +439,12 @@ static void ClearFailedGPUBackends() {
 void NativeInit(int argc, const char *argv[], const char *savegame_dir, const char *external_dir, const char *cache_dir) {
 	net::Init();  // This needs to happen before we load the config. So on Windows we also run it in Main. It's fine to call multiple times.
 
+	ShaderTranslationInit();
+
 	InitFastMath(cpu_info.bNEON);
 	SetupAudioFormats();
 
 	g_Discord.SetPresenceMenu();
-
-	// TODO: Load these in the background instead of synchronously.
-	g_BackgroundAudio.LoadSamples();
 
 	// Make sure UI state is MENU.
 	ResetUIState();
@@ -465,6 +462,9 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 #if defined(IOS)
 	// Packed assets are included in app
 	VFSRegister("", new DirectoryAssetReader(external_dir));
+#endif
+#if defined(ASSETS_DIR)
+	VFSRegister("", new DirectoryAssetReader(ASSETS_DIR));
 #endif
 #if !defined(MOBILE_DEVICE) && !defined(_WIN32) && !PPSSPP_PLATFORM(SWITCH)
 	VFSRegister("", new DirectoryAssetReader((File::GetExeDirectory() + "assets/").c_str()));
@@ -492,6 +492,8 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 	g_Config.externalDirectory = external_dir;
 
 #if defined(__ANDROID__)
+	// TODO: This needs to change in Android 12.
+	//
 	// Maybe there should be an option to use internal memory instead, but I think
 	// that for most people, using external memory (SDCard/USB Storage) makes the
 	// most sense.
@@ -531,7 +533,7 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 	}
 
 	if (!LogManager::GetInstance())
-		LogManager::Init();
+		LogManager::Init(&g_Config.bEnableLogging);
 
 #ifndef _WIN32
 	g_Config.AddSearchPath(user_data_path);
@@ -559,18 +561,24 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 
 	// Parse command line
 	LogTypes::LOG_LEVELS logLevel = LogTypes::LINFO;
+	bool forceLogLevel = false;
+	const auto setLogLevel = [&logLevel, &forceLogLevel](LogTypes::LOG_LEVELS level) {
+		logLevel = level;
+		forceLogLevel = true;
+	};
+
 	for (int i = 1; i < argc; i++) {
 		if (argv[i][0] == '-') {
 			switch (argv[i][1]) {
 			case 'd':
 				// Enable debug logging
 				// Note that you must also change the max log level in Log.h.
-				logLevel = LogTypes::LDEBUG;
+				setLogLevel(LogTypes::LDEBUG);
 				break;
 			case 'v':
 				// Enable verbose logging
 				// Note that you must also change the max log level in Log.h.
-				logLevel = LogTypes::LVERBOSE;
+				setLogLevel(LogTypes::LVERBOSE);
 				break;
 			case 'j':
 				g_Config.iCpuCore = (int)CPUCore::JIT;
@@ -585,6 +593,8 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 				g_Config.bSaveSettings = false;
 				break;
 			case '-':
+				if (!strncmp(argv[i], "--loglevel=", strlen("--loglevel=")) && strlen(argv[i]) > strlen("--loglevel="))
+					setLogLevel(static_cast<LogTypes::LOG_LEVELS>(std::atoi(argv[i] + strlen("--loglevel="))));
 				if (!strncmp(argv[i], "--log=", strlen("--log=")) && strlen(argv[i]) > strlen("--log="))
 					fileToLog = argv[i] + strlen("--log=");
 				if (!strncmp(argv[i], "--state=", strlen("--state=")) && strlen(argv[i]) > strlen("--state="))
@@ -595,8 +605,14 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 #endif
 				if (!strncmp(argv[i], "--pause-menu-exit", strlen("--pause-menu-exit")))
 					g_Config.bPauseMenuExitsEmulator = true;
-				if (!strcmp(argv[i], "--fullscreen"))
+				if (!strcmp(argv[i], "--fullscreen")) {
 					g_Config.bFullScreen = true;
+					System_SendMessage("toggle_fullscreen", "1");
+				}
+				if (!strcmp(argv[i], "--windowed")) {
+					g_Config.bFullScreen = false;
+					System_SendMessage("toggle_fullscreen", "0");
+				}
 				if (!strcmp(argv[i], "--touchscreentest"))
 					gotoTouchScreenTest = true;
 				if (!strcmp(argv[i], "--gamesettings"))
@@ -608,21 +624,21 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 			// don't already have one.
 			if (!gotBootFilename) {
 				gotBootFilename = true;
-				ILOG("Boot filename found in args: '%s'", argv[i]);
+				INFO_LOG(SYSTEM, "Boot filename found in args: '%s'", argv[i]);
 
 				bool okToLoad = true;
 				bool okToCheck = true;
 				if (System_GetPropertyBool(SYSPROP_SUPPORTS_PERMISSIONS)) {
 					PermissionStatus status = System_GetPermissionStatus(SYSTEM_PERMISSION_STORAGE);
 					if (status == PERMISSION_STATUS_DENIED) {
-						ELOG("Storage permission denied. Launching without argument.");
+						ERROR_LOG(IO, "Storage permission denied. Launching without argument.");
 						okToLoad = false;
 						okToCheck = false;
 					} else if (status != PERMISSION_STATUS_GRANTED) {
-						ELOG("Storage permission not granted. Launching without argument check.");
+						ERROR_LOG(IO, "Storage permission not granted. Launching without argument check.");
 						okToCheck = false;
 					} else {
-						ILOG("Storage permission granted.");
+						INFO_LOG(IO, "Storage permission granted.");
 					}
 				}
 				if (okToLoad) {
@@ -659,12 +675,18 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 	if (fileToLog)
 		LogManager::GetInstance()->ChangeFileLog(fileToLog);
 
+	if (forceLogLevel)
+		LogManager::GetInstance()->SetAllLogLevels(logLevel);
+
 	PostLoadConfig();
 
-#if defined(__ANDROID__) || (defined(MOBILE_DEVICE) && !defined(_DEBUG))
+#if PPSSPP_PLATFORM(ANDROID)
+	logger = new AndroidLogger();
+	logman->AddListener(logger);
+#elif (defined(MOBILE_DEVICE) && !defined(_DEBUG))
 	// Enable basic logging for any kind of mobile device, since LogManager doesn't.
 	// The MOBILE_DEVICE/_DEBUG condition matches LogManager.cpp.
-	logger = new AndroidLogger();
+	logger = new PrintfLogger();
 	logman->AddListener(logger);
 #endif
 
@@ -674,6 +696,12 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 		}
 	}
 
+	if (System_GetPropertyBool(SYSPROP_CAN_JIT) == false && g_Config.iCpuCore == (int)CPUCore::JIT) {
+		// Just gonna force it to the IR interpreter on startup.
+		// We don't hide the option, but we make sure it's off on bootup. In case someone wants
+		// to experiment in future iOS versions or something...
+		g_Config.iCpuCore = (int)CPUCore::IR_JIT;
+	}
 
 	auto des = GetI18NCategory("DesktopUI");
 	// Note to translators: do not translate this/add this to PPSSPP-lang's files.
@@ -709,6 +737,9 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 		g_Config.sFont = des->T("Font", "Roboto Condensed");
 	}
 #endif
+
+	// TODO: Load these in the background instead of synchronously.
+	g_BackgroundAudio.LoadSamples();
 
 	if (!boot_filename.empty() && stateToLoad != NULL) {
 		SaveState::Load(stateToLoad, -1, [](SaveState::Status status, const std::string &message, void *) {
@@ -809,7 +840,7 @@ void RenderOverlays(UIContext *dc, void *userdata);
 bool CreateGlobalPipelines();
 
 bool NativeInitGraphics(GraphicsContext *graphicsContext) {
-	ILOG("NativeInitGraphics");
+	INFO_LOG(SYSTEM, "NativeInitGraphics");
 
 	// We set this now so any resize during init is processed later.
 	resized = false;
@@ -878,7 +909,7 @@ bool NativeInitGraphics(GraphicsContext *graphicsContext) {
 		gpu->DeviceRestore();
 	}
 
-	ILOG("NativeInitGraphics completed");
+	INFO_LOG(SYSTEM, "NativeInitGraphics completed");
 	return true;
 }
 
@@ -928,7 +959,7 @@ void NativeShutdownGraphics() {
 	if (gpu)
 		gpu->DeviceLost();
 
-	ILOG("NativeShutdownGraphics");
+	INFO_LOG(SYSTEM, "NativeShutdownGraphics");
 
 #if PPSSPP_PLATFORM(WINDOWS)
 	delete winAudioBackend;
@@ -937,14 +968,12 @@ void NativeShutdownGraphics() {
 
 #if PPSSPP_PLATFORM(WINDOWS) && !PPSSPP_PLATFORM(UWP)
 	if (winCamera) {
-		winCamera->sendMessage({ CAPTUREDEVIDE_COMMAND::SHUTDOWN, nullptr });
-		while (!winCamera->isShutDown()) {};// Wait for shutting down.
+		winCamera->waitShutDown();
 		delete winCamera;
 		winCamera = nullptr;
 	}
 	if (winMic) {
-		winMic->sendMessage({ CAPTUREDEVIDE_COMMAND::SHUTDOWN, nullptr });
-		while (!winMic->isShutDown()) {};// Wait for shutting down.
+		winMic->waitShutDown();
 		delete winMic;
 		winMic = nullptr;
 	}
@@ -970,7 +999,7 @@ void NativeShutdownGraphics() {
 		texColorPipeline = nullptr;
 	}
 
-	ILOG("NativeShutdownGraphics done");
+	INFO_LOG(SYSTEM, "NativeShutdownGraphics done");
 }
 
 void TakeScreenshot() {
@@ -1038,6 +1067,9 @@ void RenderOverlays(UIContext *dc, void *userdata) {
 }
 
 void NativeRender(GraphicsContext *graphicsContext) {
+	_assert_(graphicsContext != nullptr);
+	_assert_(screenManager != nullptr);
+
 	g_GameManager.Update();
 
 	if (GetUIState() != UISTATE_INGAME) {
@@ -1087,7 +1119,7 @@ void NativeRender(GraphicsContext *graphicsContext) {
 	}
 
 	if (resized) {
-		ILOG("Resized flag set - recalculating bounds");
+		INFO_LOG(G3D, "Resized flag set - recalculating bounds");
 		resized = false;
 
 		if (uiContext) {
@@ -1116,7 +1148,7 @@ void NativeRender(GraphicsContext *graphicsContext) {
 		NativeMessageReceived("gpu_resized", "");
 #endif
 	} else {
-		// ILOG("Polling graphics context");
+		// INFO_LOG(G3D, "Polling graphics context");
 		graphicsContext->Poll();
 	}
 
@@ -1176,7 +1208,7 @@ void HandleGlobalMessage(const std::string &msg, const std::string &value) {
 		// Ideally we should simply reinitialize graphics to the mode from the config, but there are potential issues
 		// and I can't risk it before 1.9.0.
 		int gpuBackend = g_Config.iGPUBackend;
-		ILOG("Reloading config after storage permission grant.");
+		INFO_LOG(IO, "Reloading config after storage permission grant.");
 		g_Config.Reload();
 		PostLoadConfig();
 		g_Config.iGPUBackend = gpuBackend;
@@ -1215,16 +1247,16 @@ void NativeUpdate() {
 bool NativeIsAtTopLevel() {
 	// This might need some synchronization?
 	if (!screenManager) {
-		ELOG("No screen manager active");
+		ERROR_LOG(SYSTEM, "No screen manager active");
 		return false;
 	}
 	Screen *currentScreen = screenManager->topScreen();
 	if (currentScreen) {
 		bool top = currentScreen->isTopLevel();
-		ILOG("Screen toplevel: %i", (int)top);
+		INFO_LOG(SYSTEM, "Screen toplevel: %i", (int)top);
 		return currentScreen->isTopLevel();
 	} else {
-		ELOG("No current screen");
+		ERROR_LOG(SYSTEM, "No current screen");
 		return false;
 	}
 }
@@ -1243,7 +1275,7 @@ bool NativeTouch(const TouchInput &touch) {
 }
 
 bool NativeKey(const KeyInput &key) {
-	// ILOG("Key code: %i flags: %i", key.keyCode, key.flags);
+	// INFO_LOG(SYSTEM, "Key code: %i flags: %i", key.keyCode, key.flags);
 #if !defined(MOBILE_DEVICE)
 	if (g_Config.bPauseExitsEmulator) {
 		static std::vector<int> pspKeys;
@@ -1361,7 +1393,7 @@ void NativeInputBoxReceived(std::function<void(bool, const std::string &)> cb, b
 
 void NativeResized() {
 	// NativeResized can come from any thread so we just set a flag, then process it later.
-	ILOG("NativeResized - setting flag");
+	INFO_LOG(G3D, "NativeResized - setting flag");
 	resized = true;
 }
 
@@ -1387,15 +1419,7 @@ void NativeShutdown() {
 #endif
 	g_Config.Save("NativeShutdown");
 
-	// Avoid shutting this down when restarting core.
-	if (!restarting)
-		LogManager::Shutdown();
-
-#ifdef ANDROID_NDK_PROFILER
-	moncleanup();
-#endif
-
-	ILOG("NativeShutdown called");
+	INFO_LOG(SYSTEM, "NativeShutdown called");
 
 	ShutdownWebServer();
 
@@ -1405,8 +1429,16 @@ void NativeShutdown() {
 
 	g_Discord.Shutdown();
 
-	delete logger;
-	logger = nullptr;
+	ShaderTranslationShutdown();
+
+	// Avoid shutting this down when restarting core.
+	if (!restarting)
+		LogManager::Shutdown();
+
+	if (logger) {
+		delete logger;
+		logger = nullptr;
+	}
 
 	// Previously we did exit() here on Android but that makes it hard to do things like restart on backend change.
 	// I think we handle most globals correctly or correct-enough now.

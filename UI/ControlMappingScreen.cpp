@@ -19,23 +19,24 @@
 #include <deque>
 #include <mutex>
 
-#include "base/colorutil.h"
-#include "base/logging.h"
-#include "base/display.h"
-#include "gfx/texture_atlas.h"
-#include "i18n/i18n.h"
-#include "input/keycodes.h"
-#include "input/input_state.h"
-#include "ui/root.h"
-#include "ui/ui.h"
-#include "ui/ui_context.h"
-#include "ui/view.h"
-#include "ui/viewgroup.h"
+#include "Common/Render/TextureAtlas.h"
+#include "Common/UI/Root.h"
+#include "Common/UI/UI.h"
+#include "Common/UI/Context.h"
+#include "Common/UI/View.h"
+#include "Common/UI/ViewGroup.h"
 
+#include "Common/Log.h"
+#include "Common/Data/Color/RGBAUtil.h"
+#include "Common/Data/Text/I18n.h"
+#include "Common/Input/KeyCodes.h"
+#include "Common/Input/InputState.h"
+#include "Common/System/Display.h"
+#include "Common/System/System.h"
+#include "Core/KeyMap.h"
 #include "Core/Host.h"
 #include "Core/HLE/sceCtrl.h"
 #include "Core/System.h"
-#include "Common/KeyMap.h"
 #include "Core/Config.h"
 #include "UI/ControlMappingScreen.h"
 #include "UI/GameSettingsScreen.h"
@@ -108,8 +109,6 @@ void ControlMapper::Refresh() {
 	LinearLayout *root = Add(new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(550, WRAP_CONTENT)));
 	root->SetSpacing(3.0f);
 
-	const int padding = 4;
-
 	auto iter = keyImages.find(keyName_);
 	// First, look among images.
 	if (iter != keyImages.end()) {
@@ -137,7 +136,6 @@ void ControlMapper::Refresh() {
 	for (size_t i = 0; i < mappings.size(); i++) {
 		std::string deviceName = GetDeviceName(mappings[i].deviceId);
 		std::string keyName = KeyMap::GetKeyOrAxisName(mappings[i].keyCode);
-		int image = -1;
 
 		LinearLayout *row = rightColumn->Add(new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
 		row->SetSpacing(1.0f);
@@ -245,7 +243,7 @@ void ControlMappingScreen::CreateViews() {
 	rightScroll_ = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(1.0f));
 	rightScroll_->SetTag("ControlMapping");
 	rightScroll_->SetScrollToTop(false);
-	LinearLayout *rightColumn = new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(1.0f));
+	LinearLayout *rightColumn = new LinearLayoutList(ORIENT_VERTICAL, new LinearLayoutParams(1.0f));
 	rightScroll_->Add(rightColumn);
 
 	root_->Add(leftColumn);
@@ -436,6 +434,7 @@ public:
 			xAxis_(xAxis), xDir_(xDir),
 			yAxis_(yAxis), yDir_(yDir) {}
 	void Draw(UIContext &dc) override;
+	std::string DescribeText() const override { return ""; }
 	void Update() override;
 	void Axis(const AxisInput &input) override {
 		// TODO: Check input.deviceId?
@@ -582,7 +581,7 @@ bool TouchTestScreen::touch(const TouchInput &touch) {
 		bool found = false;
 		for (int i = 0; i < MAX_TOUCH_POINTS; i++) {
 			if (touches_[i].id == touch.id) {
-				WLOG("Double touch");
+				WARN_LOG(SYSTEM, "Double touch");
 				touches_[i].x = touch.x;
 				touches_[i].y = touch.y;
 				found = true;
@@ -609,7 +608,7 @@ bool TouchTestScreen::touch(const TouchInput &touch) {
 			}
 		}
 		if (!found) {
-			WLOG("Move without touch down: %d", touch.id);
+			WARN_LOG(SYSTEM, "Move without touch down: %d", touch.id);
 		}
 	}
 	if (touch.flags & TOUCH_UP) {
@@ -622,7 +621,7 @@ bool TouchTestScreen::touch(const TouchInput &touch) {
 			}
 		}
 		if (!found) {
-			WLOG("Touch release without touch down");
+			WARN_LOG(SYSTEM, "Touch release without touch down");
 		}
 	}
 	return true;

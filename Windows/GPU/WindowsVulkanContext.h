@@ -19,7 +19,7 @@
 
 #include "Common/GraphicsContext.h"
 #include "Windows/GPU/WindowsGraphicsContext.h"
-#include "thin3d/thin3d.h"
+#include "Common/GPU/thin3d.h"
 
 class VulkanContext;
 class VulkanRenderManager;
@@ -34,7 +34,7 @@ public:
 	void Resize() override;
 	void Poll() override;
 
-	void *GetAPIContext();
+	void *GetAPIContext() override;
 
 	Draw::DrawContext *GetDrawContext() override { return draw_; }
 private:

@@ -19,14 +19,17 @@
 #include <list>
 #include <map>
 
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
+#include "Common/Serialize/SerializeList.h"
+#include "Common/Serialize/SerializeMap.h"
 #include "Core/MemMapHelpers.h"
 #include "Core/Reporting.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/FunctionWrappers.h"
 #include "Core/MIPS/MIPS.h"
-#include "Common/ChunkFile.h"
 
-#include "Core/Debugger/Breakpoints.h"
+#include "Core/Debugger/MemBlockInfo.h"
 #include "Core/HLE/sceKernel.h"
 #include "Core/HLE/sceKernelThread.h"
 #include "Core/HLE/sceKernelInterrupt.h"
@@ -59,7 +62,7 @@ public:
 		if (!s)
 			return;
 
-		p.Do(savedCpu);
+		Do(p, savedCpu);
 	}
 
 	PSPThreadContext savedCpu;
@@ -213,8 +216,8 @@ void IntrHandler::DoState(PointerWrap &p)
 	if (!s)
 		return;
 
-	p.Do(intrNumber);
-	p.Do<int, SubIntrHandler>(subIntrHandlers);
+	Do(p, intrNumber);
+	Do<int, SubIntrHandler>(p, subIntrHandlers);
 }
 
 void PendingInterrupt::DoState(PointerWrap &p)
@@ -223,8 +226,8 @@ void PendingInterrupt::DoState(PointerWrap &p)
 	if (!s)
 		return;
 
-	p.Do(intr);
-	p.Do(subintr);
+	Do(p, intr);
+	Do(p, subintr);
 }
 
 void __InterruptsInit()
@@ -244,7 +247,7 @@ void __InterruptsDoState(PointerWrap &p)
 		return;
 
 	int numInterrupts = PSP_NUMBER_INTERRUPTS;
-	p.Do(numInterrupts);
+	Do(p, numInterrupts);
 	if (numInterrupts != PSP_NUMBER_INTERRUPTS)
 	{
 		p.SetError(p.ERROR_FAILURE);
@@ -254,10 +257,10 @@ void __InterruptsDoState(PointerWrap &p)
 
 	intState.DoState(p);
 	PendingInterrupt pi(0, 0);
-	p.Do(pendingInterrupts, pi);
-	p.Do(interruptsEnabled);
-	p.Do(inInterrupt);
-	p.Do(threadBeforeInterrupt);
+	Do(p, pendingInterrupts, pi);
+	Do(p, interruptsEnabled);
+	Do(p, inInterrupt);
+	Do(p, threadBeforeInterrupt);
 }
 
 void __InterruptsDoStateLate(PointerWrap &p)
@@ -615,6 +618,7 @@ static u32 sceKernelMemset(u32 addr, u32 fillc, u32 n)
 			Memory::Memset(addr, c, n);
 		}
 	}
+	NotifyMemInfo(MemBlockFlags::WRITE, addr, n, "KernelMemset");
 	return addr;
 }
 
@@ -654,8 +658,8 @@ static u32 sceKernelMemcpy(u32 dst, u32 src, u32 size)
 		}
 	}
 
-	CBreakPoints::ExecMemCheck(src, false, size, currentMIPS->pc);
-	CBreakPoints::ExecMemCheck(dst, true, size, currentMIPS->pc);
+	NotifyMemInfo(MemBlockFlags::READ, src, size, "KernelMemcpy");
+	NotifyMemInfo(MemBlockFlags::WRITE, dst, size, "KernelMemcpy");
 
 	return dst;
 }
@@ -686,6 +690,8 @@ static u32 sysclib_memcpy(u32 dst, u32 src, u32 size) {
 	if (Memory::IsValidRange(dst, size) && Memory::IsValidRange(src, size)) {
 		memcpy(Memory::GetPointer(dst), Memory::GetPointer(src), size);
 	}
+	NotifyMemInfo(MemBlockFlags::READ, src, size, "KernelMemcpy");
+	NotifyMemInfo(MemBlockFlags::WRITE, dst, size, "KernelMemcpy");
 	return dst;
 }
 
@@ -751,6 +757,7 @@ static u32 sysclib_memset(u32 destAddr, int data, int size) {
 	if (Memory::IsValidRange(destAddr, size)) {
 		memset(Memory::GetPointer(destAddr), data, size);
 	}
+	NotifyMemInfo(MemBlockFlags::WRITE, destAddr, size, "KernelMemset");
 	return 0;
 }
 
@@ -783,6 +790,8 @@ static u32 sysclib_memmove(u32 dst, u32 src, u32 size) {
 	if (Memory::IsValidRange(dst, size) && Memory::IsValidRange(src, size)) {
 		memmove(Memory::GetPointer(dst), Memory::GetPointer(src), size);
 	}
+	NotifyMemInfo(MemBlockFlags::READ, src, size, "KernelMemmove");
+	NotifyMemInfo(MemBlockFlags::WRITE, dst, size, "KernelMemmove");
 	return 0;
 }
 

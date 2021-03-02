@@ -284,6 +284,10 @@ else ifneq (,$(findstring windows_msvc2017,$(platform)))
 		LDFLAGS += -APPCONTAINER -NXCOMPAT -DYNAMICBASE -MANIFEST:NO -OPT:REF -SUBSYSTEM:CONSOLE -MANIFESTUAC:NO -OPT:ICF -ERRORREPORT:PROMPT -NOLOGO -TLBID:1 -DEBUG:FULL -WINMD:NO
 		LIBS += WindowsApp.lib
 	endif
+	
+	ifeq ($(DEBUG), 1)
+		MSVC2017CompileFlags += -DEBUG
+	endif
 
 	CFLAGS += $(MSVC2017CompileFlags) -nologo
 	CXXFLAGS += $(MSVC2017CompileFlags) -nologo -EHsc
@@ -300,7 +304,7 @@ else ifneq (,$(findstring windows_msvc2017,$(platform)))
 	filter_out1 = $(filter-out $(firstword $1),$1)
 	filter_out2 = $(call filter_out1,$(call filter_out1,$1))
 
-	reg_query = $(call filter_out2,$(subst $2,,$(shell reg query "$2" -v "$1" 2>nul)))
+	reg_query = $(call filter_out2,$(subst $2,,$(shell reg query "$2" -v "$1" 2>/dev/null)))
 	fix_path = $(subst $(SPACE),\ ,$(subst \,/,$1))
 
 	b1 := (
@@ -392,6 +396,10 @@ else ifneq (,$(findstring windows_msvc2019,$(platform)))
 		LIBS += WindowsApp.lib
 	endif
 
+	ifeq ($(DEBUG), 1)
+		MSVC2019CompileFlags += -DEBUG
+	endif
+
 	CFLAGS += $(MSVC2019CompileFlags) -nologo
 	CXXFLAGS += $(MSVC2019CompileFlags) -nologo -EHsc
 
@@ -407,7 +415,7 @@ else ifneq (,$(findstring windows_msvc2019,$(platform)))
 	filter_out1 = $(filter-out $(firstword $1),$1)
 	filter_out2 = $(call filter_out1,$(call filter_out1,$1))
 
-	reg_query = $(call filter_out2,$(subst $2,,$(shell reg query "$2" -v "$1" 2>nul)))
+	reg_query = $(call filter_out2,$(subst $2,,$(shell reg query "$2" -v "$1" 2>/dev/null)))
 	fix_path = $(subst $(SPACE),\ ,$(subst \,/,$1))
 
 	b1 := (

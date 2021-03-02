@@ -16,17 +16,17 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include "ppsspp_config.h"
+
 #if PPSSPP_ARCH(ARM64)
 
-#include "base/logging.h"
-
+#include "Common/Log.h"
+#include "Common/MemoryUtil.h"
+#include "Common/CPUDetect.h"
+#include "Common/Arm64Emitter.h"
 #include "Core/MemMap.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/System.h"
 #include "Core/CoreTiming.h"
-#include "Common/MemoryUtil.h"
-#include "Common/CPUDetect.h"
-#include "Common/Arm64Emitter.h"
 #include "Core/MIPS/ARM64/Arm64Jit.h"
 #include "Core/MIPS/JitCommon/JitCommon.h"
 
@@ -77,9 +77,9 @@ extern volatile CoreState coreState;
 void ShowPC(u32 downcount, void *membase, void *jitbase) {
 	static int count = 0;
 	if (currentMIPS) {
-		ELOG("ShowPC : %08x  Downcount : %08x %d %p %p", currentMIPS->pc, downcount, count, membase, jitbase);
+		ERROR_LOG(JIT, "ShowPC : %08x  Downcount : %08x %d %p %p", currentMIPS->pc, downcount, count, membase, jitbase);
 	} else {
-		ELOG("Universe corrupt?");
+		ERROR_LOG(JIT, "Universe corrupt?");
 	}
 	//if (count > 2000)
 	//	exit(0);
@@ -250,6 +250,7 @@ void Arm64Jit::GenerateFixedCode(const JitOptions &jo) {
 #ifdef MASKED_PSP_MEMORY
 			ANDI2R(SCRATCH1, SCRATCH1, 0x3FFFFFFF);
 #endif
+			dispatcherFetch = GetCodePtr();
 			LDR(SCRATCH1, MEMBASEREG, SCRATCH1_64);
 			LSR(SCRATCH2, SCRATCH1, 24);   // or UBFX(SCRATCH2, SCRATCH1, 24, 8)
 			ANDI2R(SCRATCH1, SCRATCH1, 0x00FFFFFF);

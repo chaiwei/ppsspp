@@ -16,14 +16,14 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include <atomic>
-#include <vector>
 #include <cstdio>
 #include <mutex>
+#include <vector>
 
-#include "base/logging.h"
-#include "profiler/profiler.h"
+#include "Common/Profiler/Profiler.h"
 
-#include "Common/MsgHandler.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeList.h"
 #include "Core/CoreTiming.h"
 #include "Core/Core.h"
 #include "Core/Config.h"
@@ -31,7 +31,6 @@
 #include "Core/HLE/sceDisplay.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/Reporting.h"
-#include "Common/ChunkFile.h"
 
 static const int initialHz = 222000000;
 int CPU_HZ = 222000000;
@@ -43,25 +42,18 @@ int CPU_HZ = 222000000;
 namespace CoreTiming
 {
 
-struct EventType
-{
-	EventType() {}
-
-	EventType(TimedCallback cb, const char *n)
-		: callback(cb), name(n) {}
-
+struct EventType {
 	TimedCallback callback;
 	const char *name;
 };
 
 std::vector<EventType> event_types;
+int nextEventTypeRestoreId = -1;
 
-struct BaseEvent
-{
+struct BaseEvent {
 	s64 time;
 	u64 userdata;
 	int type;
-//	Event *next;
 };
 
 typedef LinkedListItem<BaseEvent> Event;
@@ -169,29 +161,33 @@ void FreeTsEvent(Event* ev)
 	allocatedTsEvents--;
 }
 
-int RegisterEvent(const char *name, TimedCallback callback)
-{
-	event_types.push_back(EventType(callback, name));
-	return (int)event_types.size() - 1;
+int RegisterEvent(const char *name, TimedCallback callback) {
+	for (const auto &ty : event_types) {
+		if (!strcmp(ty.name, name)) {
+			_assert_msg_(false, "Event type %s already registered", name);
+			// Try to make sure it doesn't work so we notice for sure.
+			return -1;
+		}
+	}
+
+	int id = (int)event_types.size();
+	event_types.push_back(EventType{ callback, name });
+	return id;
 }
 
-void AntiCrashCallback(u64 userdata, int cyclesLate)
-{
+void AntiCrashCallback(u64 userdata, int cyclesLate) {
 	ERROR_LOG(SAVESTATE, "Savestate broken: an unregistered event was called.");
 	Core_EnableStepping(true);
 }
 
-void RestoreRegisterEvent(int event_type, const char *name, TimedCallback callback)
-{
-	_assert_msg_(event_type >= 0, "Invalid event type %d", event_type)
-	if (event_type >= (int) event_types.size())
-		event_types.resize(event_type + 1, EventType(AntiCrashCallback, "INVALID EVENT"));
-
-	event_types[event_type] = EventType(callback, name);
+void RestoreRegisterEvent(int &event_type, const char *name, TimedCallback callback) {
+	if (event_type == -1)
+		event_type = nextEventTypeRestoreId++;
+	_assert_msg_(event_type >= 0 && event_type < event_types.size(), "Invalid event type %d", event_type);
+	event_types[event_type] = EventType{ callback, name };
 }
 
-void UnregisterAllEvents()
-{
+void UnregisterAllEvents() {
 	_dbg_assert_msg_(first == nullptr, "Unregistering events with events pending - this isn't good.");
 	event_types.clear();
 }
@@ -575,8 +571,7 @@ void ForceCheck()
 #endif
 }
 
-void Advance()
-{
+void Advance() {
 	PROFILE_THIS_SCOPE("advance");
 	int cyclesExecuted = slicelength - currentMIPS->downcount;
 	globalTimer += cyclesExecuted;
@@ -586,17 +581,14 @@ void Advance()
 		MoveEvents();
 	ProcessFifoWaitEvents();
 
-	if (!first)
-	{
+	if (!first) {
 		// This should never happen in PPSSPP.
 		// WARN_LOG_REPORT(TIME, "WARNING - no events in queue. Setting currentMIPS->downcount to 10000");
 		if (slicelength < 10000) {
 			slicelength += 10000;
-			currentMIPS->downcount += slicelength;
+			currentMIPS->downcount += 10000;
 		}
-	}
-	else
-	{
+	} else {
 		// Note that events can eat cycles as well.
 		int target = (int)(first->time - globalTimer);
 		if (target > MAX_SLICE_LENGTH)
@@ -608,35 +600,30 @@ void Advance()
 	}
 }
 
-void LogPendingEvents()
-{
+void LogPendingEvents() {
 	Event *ptr = first;
-	while (ptr)
-	{
+	while (ptr) {
 		//INFO_LOG(CPU, "PENDING: Now: %lld Pending: %lld Type: %d", globalTimer, ptr->time, ptr->type);
 		ptr = ptr->next;
 	}
 }
 
-void Idle(int maxIdle)
-{
+void Idle(int maxIdle) {
 	int cyclesDown = currentMIPS->downcount;
 	if (maxIdle != 0 && cyclesDown > maxIdle)
 		cyclesDown = maxIdle;
 
-	if (first && cyclesDown > 0)
-	{
+	if (first && cyclesDown > 0) {
 		int cyclesExecuted = slicelength - currentMIPS->downcount;
 		int cyclesNextEvent = (int) (first->time - globalTimer);
 
 		if (cyclesNextEvent < cyclesExecuted + cyclesDown)
-		{
 			cyclesDown = cyclesNextEvent - cyclesExecuted;
-			// Now, now... no time machines, please.
-			if (cyclesDown < 0)
-				cyclesDown = 0;
-		}
 	}
+
+	// Now, now... no time machines, please.
+	if (cyclesDown < 0)
+		cyclesDown = 0;
 
 	// VERBOSE_LOG(CPU, "Idle for %i cycles! (%f ms)", cyclesDown, cyclesDown / (float)(CPU_HZ * 0.001f));
 
@@ -671,45 +658,55 @@ std::string GetScheduledEventsSummary() {
 void Event_DoState(PointerWrap &p, BaseEvent *ev)
 {
 	// There may be padding, so do each one individually.
-	p.Do(ev->time);
-	p.Do(ev->userdata);
-	p.Do(ev->type);
+	Do(p, ev->time);
+	Do(p, ev->userdata);
+	Do(p, ev->type);
 }
 
 void Event_DoStateOld(PointerWrap &p, BaseEvent *ev)
 {
-	p.Do(*ev);
+	Do(p, *ev);
 }
 
-void DoState(PointerWrap &p)
-{
+void DoState(PointerWrap &p) {
 	std::lock_guard<std::mutex> lk(externalEventLock);
 
 	auto s = p.Section("CoreTiming", 1, 3);
 	if (!s)
 		return;
 
-	int n = (int) event_types.size();
-	p.Do(n);
-	// These (should) be filled in later by the modules.
-	event_types.resize(n, EventType(AntiCrashCallback, "INVALID EVENT"));
-
-	if (s >= 3) {
-		p.DoLinkedList<BaseEvent, GetNewEvent, FreeEvent, Event_DoState>(first, (Event **) NULL);
-		p.DoLinkedList<BaseEvent, GetNewTsEvent, FreeTsEvent, Event_DoState>(tsFirst, &tsLast);
-	} else {
-		p.DoLinkedList<BaseEvent, GetNewEvent, FreeEvent, Event_DoStateOld>(first, (Event **) NULL);
-		p.DoLinkedList<BaseEvent, GetNewTsEvent, FreeTsEvent, Event_DoStateOld>(tsFirst, &tsLast);
+	int n = (int)event_types.size();
+	int current = n;
+	Do(p, n);
+	if (n > current) {
+		WARN_LOG(SAVESTATE, "Savestate failure: more events than current (can't ever remove an event)");
+		p.SetError(p.ERROR_FAILURE);
+		return;
 	}
 
-	p.Do(CPU_HZ);
-	p.Do(slicelength);
-	p.Do(globalTimer);
-	p.Do(idledCycles);
+	// These (should) be filled in later by the modules.
+	for (int i = 0; i < current; ++i) {
+		event_types[i].callback = AntiCrashCallback;
+		event_types[i].name = "INVALID EVENT";
+	}
+	nextEventTypeRestoreId = n - 1;
+
+	if (s >= 3) {
+		DoLinkedList<BaseEvent, GetNewEvent, FreeEvent, Event_DoState>(p, first, (Event **) NULL);
+		DoLinkedList<BaseEvent, GetNewTsEvent, FreeTsEvent, Event_DoState>(p, tsFirst, &tsLast);
+	} else {
+		DoLinkedList<BaseEvent, GetNewEvent, FreeEvent, Event_DoStateOld>(p, first, (Event **) NULL);
+		DoLinkedList<BaseEvent, GetNewTsEvent, FreeTsEvent, Event_DoStateOld>(p, tsFirst, &tsLast);
+	}
+
+	Do(p, CPU_HZ);
+	Do(p, slicelength);
+	Do(p, globalTimer);
+	Do(p, idledCycles);
 
 	if (s >= 2) {
-		p.Do(lastGlobalTimeTicks);
-		p.Do(lastGlobalTimeUs);
+		Do(p, lastGlobalTimeTicks);
+		Do(p, lastGlobalTimeUs);
 	} else {
 		lastGlobalTimeTicks = 0;
 		lastGlobalTimeUs = 0;

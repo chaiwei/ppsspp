@@ -20,14 +20,17 @@
 #include <vector>
 #include <map>
 
-#include "Common/ChunkFile.h"
+#include "Core/CoreTiming.h"
+#include "Core/Debugger/MemBlockInfo.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/FunctionWrappers.h"
 #include "Core/System.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/MemMapHelpers.h"
-#include "Core/CoreTiming.h"
 #include "Core/Reporting.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
+#include "Common/Serialize/SerializeMap.h"
 
 #include "Core/HLE/sceKernel.h"
 #include "Core/HLE/sceKernelThread.h"
@@ -130,16 +133,16 @@ struct FPL : public KernelObject
 		if (!s)
 			return;
 
-		p.Do(nf);
+		Do(p, nf);
 		if (p.mode == p.MODE_READ)
 			blocks = new bool[nf.numBlocks];
-		p.DoArray(blocks, nf.numBlocks);
-		p.Do(address);
-		p.Do(alignedSize);
-		p.Do(nextBlock);
+		DoArray(p, blocks, nf.numBlocks);
+		Do(p, address);
+		Do(p, alignedSize);
+		Do(p, nextBlock);
 		FplWaitingThread dv = {0};
-		p.Do(waitingThreads, dv);
-		p.Do(pausedWaits);
+		Do(p, waitingThreads, dv);
+		Do(p, pausedWaits);
 	}
 
 	NativeFPL nf;
@@ -392,15 +395,15 @@ struct VPL : public KernelObject
 			return;
 		}
 
-		p.Do(nv);
-		p.Do(address);
+		Do(p, nv);
+		Do(p, address);
 		VplWaitingThread dv = {0};
-		p.Do(waitingThreads, dv);
+		Do(p, waitingThreads, dv);
 		alloc.DoState(p);
-		p.Do(pausedWaits);
+		Do(p, pausedWaits);
 
 		if (s >= 2) {
-			p.Do(header);
+			Do(p, header);
 		}
 	}
 
@@ -424,8 +427,11 @@ void __KernelFplEndCallback(SceUID threadID, SceUID prevCallbackId);
 
 void __KernelMemoryInit()
 {
-	kernelMemory.Init(PSP_GetKernelMemoryBase(), PSP_GetKernelMemoryEnd()-PSP_GetKernelMemoryBase());
-	userMemory.Init(PSP_GetUserMemoryBase(), PSP_GetUserMemoryEnd()-PSP_GetUserMemoryBase());
+	MemBlockInfoInit();
+	kernelMemory.Init(PSP_GetKernelMemoryBase(), PSP_GetKernelMemoryEnd() - PSP_GetKernelMemoryBase(), false);
+	userMemory.Init(PSP_GetUserMemoryBase(), PSP_GetUserMemoryEnd() - PSP_GetUserMemoryBase(), false);
+	Memory::Memset(PSP_GetKernelMemoryBase(), 0, PSP_GetKernelMemoryEnd() - PSP_GetKernelMemoryBase(), "MemInit");
+	Memory::Memset(PSP_GetUserMemoryBase(), 0, PSP_GetUserMemoryEnd() - PSP_GetUserMemoryBase(), "MemInit");
 	INFO_LOG(SCEKERNEL, "Kernel and user memory pools initialized");
 
 	vplWaitTimer = CoreTiming::RegisterEvent("VplTimeout", __KernelVplTimeout);
@@ -456,17 +462,19 @@ void __KernelMemoryDoState(PointerWrap &p)
 	kernelMemory.DoState(p);
 	userMemory.DoState(p);
 
-	p.Do(vplWaitTimer);
+	Do(p, vplWaitTimer);
 	CoreTiming::RestoreRegisterEvent(vplWaitTimer, "VplTimeout", __KernelVplTimeout);
-	p.Do(fplWaitTimer);
+	Do(p, fplWaitTimer);
 	CoreTiming::RestoreRegisterEvent(fplWaitTimer, "FplTimeout", __KernelFplTimeout);
-	p.Do(flags_);
-	p.Do(sdkVersion_);
-	p.Do(compilerVersion_);
-	p.DoArray(tlsplUsedIndexes, ARRAY_SIZE(tlsplUsedIndexes));
+	Do(p, flags_);
+	Do(p, sdkVersion_);
+	Do(p, compilerVersion_);
+	DoArray(p, tlsplUsedIndexes, ARRAY_SIZE(tlsplUsedIndexes));
 	if (s >= 2) {
-		p.Do(tlsplThreadEndChecks);
+		Do(p, tlsplThreadEndChecks);
 	}
+
+	MemBlockInfoDoState(p);
 }
 
 void __KernelMemoryShutdown()
@@ -482,6 +490,7 @@ void __KernelMemoryShutdown()
 #endif
 	kernelMemory.Shutdown();
 	tlsplThreadEndChecks.clear();
+	MemBlockInfoShutdown();
 }
 
 enum SceKernelFplAttr
@@ -506,6 +515,7 @@ static bool __KernelUnlockFplForThread(FPL *fpl, FplWaitingThread &threadInfo, u
 		{
 			u32 blockPtr = fpl->address + fpl->alignedSize * blockNum;
 			Memory::Write_U32(blockPtr, threadInfo.addrPtr);
+			NotifyMemInfo(MemBlockFlags::SUB_ALLOC, blockPtr, fpl->alignedSize, "FplAllocate");
 		}
 		else
 			return false;
@@ -718,6 +728,7 @@ int sceKernelAllocateFpl(SceUID uid, u32 blockPtrAddr, u32 timeoutPtr)
 		if (blockNum >= 0) {
 			u32 blockPtr = fpl->address + fpl->alignedSize * blockNum;
 			Memory::Write_U32(blockPtr, blockPtrAddr);
+			NotifyMemInfo(MemBlockFlags::SUB_ALLOC, blockPtr, fpl->alignedSize, "FplAllocate");
 		} else {
 			SceUID threadID = __KernelGetCurThread();
 			HLEKernel::RemoveWaitingThread(fpl->waitingThreads, threadID);
@@ -749,6 +760,7 @@ int sceKernelAllocateFplCB(SceUID uid, u32 blockPtrAddr, u32 timeoutPtr)
 		if (blockNum >= 0) {
 			u32 blockPtr = fpl->address + fpl->alignedSize * blockNum;
 			Memory::Write_U32(blockPtr, blockPtrAddr);
+			NotifyMemInfo(MemBlockFlags::SUB_ALLOC, blockPtr, fpl->alignedSize, "FplAllocate");
 		} else {
 			SceUID threadID = __KernelGetCurThread();
 			HLEKernel::RemoveWaitingThread(fpl->waitingThreads, threadID);
@@ -780,6 +792,7 @@ int sceKernelTryAllocateFpl(SceUID uid, u32 blockPtrAddr)
 		if (blockNum >= 0) {
 			u32 blockPtr = fpl->address + fpl->alignedSize * blockNum;
 			Memory::Write_U32(blockPtr, blockPtrAddr);
+			NotifyMemInfo(MemBlockFlags::SUB_ALLOC, blockPtr, fpl->alignedSize, "FplAllocate");
 			return 0;
 		} else {
 			return SCE_KERNEL_ERROR_NO_MEMORY;
@@ -808,6 +821,9 @@ int sceKernelFreeFpl(SceUID uid, u32 blockPtr)
 			return SCE_KERNEL_ERROR_ILLEGAL_MEMBLOCK;
 		} else {
 			if (fpl->freeBlock(blockNum)) {
+				u32 blockPtr = fpl->address + fpl->alignedSize * blockNum;
+				NotifyMemInfo(MemBlockFlags::SUB_FREE, blockPtr, fpl->alignedSize, "FplFree");
+
 				DEBUG_LOG(SCEKERNEL, "sceKernelFreeFpl(%i, %08x)", uid, blockPtr);
 				__KernelSortFplThreads(fpl);
 
@@ -949,8 +965,8 @@ public:
 		if (!s)
 			return;
 
-		p.Do(address);
-		p.DoArray(name, sizeof(name));
+		Do(p, address);
+		DoArray(p, name, sizeof(name));
 	}
 
 	u32 address;
@@ -1135,6 +1151,16 @@ static int sceKernelPrintf(const char *formatString)
 
 		if (param > 6)
 			supported = false;
+	}
+
+	// Scrub for beeps and other suspicious control characters.
+	for (size_t i = 0; i < result.size(); i++) {
+		switch (result[i]) {
+		case 7:  // BEL
+		case 8:  // Backspace
+			result[i] = ' ';
+			break;
+		}
 	}
 
 	// Just in case there were embedded strings that had \n's.
@@ -1489,7 +1515,7 @@ SceUID sceKernelCreateVpl(const char *name, int partition, u32 attr, u32 vplSize
 
 	// A vpl normally has accounting stuff in the first 32 bytes.
 	vpl->address = memBlockPtr + 0x20;
-	vpl->alloc.Init(vpl->address, vpl->nv.poolSize);
+	vpl->alloc.Init(vpl->address, vpl->nv.poolSize, true);
 
 	vpl->header = PSPPointer<SceKernelVplHeader>::Create(memBlockPtr);
 	vpl->header->Init(memBlockPtr, vplSize);
@@ -1558,7 +1584,7 @@ static bool __KernelAllocateVpl(SceUID uid, u32 size, u32 addrPtr, u32 &error, b
 		} else {
 			// Padding (normally used to track the allocation.)
 			u32 allocSize = size + 8;
-			addr = vpl->alloc.Alloc(allocSize, true);
+			addr = vpl->alloc.Alloc(allocSize, true, "VplAllocate");
 		}
 		if (addr != (u32) -1) {
 			Memory::Write_U32(addr, addrPtr);
@@ -1886,15 +1912,15 @@ struct TLSPL : public KernelObject
 		if (!s)
 			return;
 
-		p.Do(ntls);
-		p.Do(address);
+		Do(p, ntls);
+		Do(p, address);
 		if (s >= 2)
-			p.Do(alignment);
+			Do(p, alignment);
 		else
 			alignment = 4;
-		p.Do(waitingThreads);
-		p.Do(next);
-		p.Do(usage);
+		Do(p, waitingThreads);
+		Do(p, next);
+		Do(p, usage);
 	}
 
 	NativeTlspl ntls;
@@ -1939,9 +1965,10 @@ int __KernelFreeTls(TLSPL *tls, SceUID threadID)
 
 		u32 alignedSize = (tls->ntls.blockSize + tls->alignment - 1) & ~(tls->alignment - 1);
 		u32 freedAddress = tls->address + freeBlock * alignedSize;
+		NotifyMemInfo(MemBlockFlags::SUB_ALLOC, freedAddress, tls->ntls.blockSize, "TlsFree");
 
 		// Whenever freeing a block, clear it (even if it's not going to wake anyone.)
-		Memory::Memset(freedAddress, 0, tls->ntls.blockSize);
+		Memory::Memset(freedAddress, 0, tls->ntls.blockSize, "TlsFree");
 
 		// First, let's remove the end check for the freeing thread.
 		auto freeingLocked = tlsplThreadEndChecks.equal_range(threadID);
@@ -2213,10 +2240,12 @@ int sceKernelGetTlsAddr(SceUID uid)
 
 		u32 alignedSize = (tls->ntls.blockSize + tls->alignment - 1) & ~(tls->alignment - 1);
 		u32 allocAddress = tls->address + allocBlock * alignedSize;
+		NotifyMemInfo(MemBlockFlags::SUB_ALLOC, allocAddress, tls->ntls.blockSize, "TlsAddr");
 
 		// We clear the blocks upon first allocation (and also when they are freed, both are necessary.)
-		if (needsClear)
-			Memory::Memset(allocAddress, 0, tls->ntls.blockSize);
+		if (needsClear) {
+			Memory::Memset(allocAddress, 0, tls->ntls.blockSize, "TlsAddr");
+		}
 
 		return allocAddress;
 	}

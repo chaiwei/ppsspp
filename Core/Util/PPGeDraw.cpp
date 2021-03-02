@@ -17,16 +17,17 @@
 
 #include <algorithm>
 
-#include "base/colorutil.h"
-#include "base/stringutil.h"
-#include "file/vfs.h"
-#include "gfx/texture_atlas.h"
-#include "gfx_es2/draw_text.h"
-#include "image/zim_load.h"
-#include "image/png_load.h"
-#include "util/text/utf8.h"
+#include "Common/Render/TextureAtlas.h"
+#include "Common/Render/Text/draw_text.h"
 
-#include "Common/ChunkFile.h"
+#include "Common/Data/Color/RGBAUtil.h"
+#include "Common/File/VFS/VFS.h"
+#include "Common/Data/Format/ZIMLoad.h"
+#include "Common/Data/Format/PNGLoad.h"
+#include "Common/Data/Encoding/Utf8.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
+#include "Common/StringUtils.h"
 #include "Core/HDRemaster.h"
 #include "Core/Host.h"
 #include "GPU/ge_constants.h"
@@ -41,6 +42,7 @@
 #include "Core/System.h"
 
 Atlas g_ppge_atlas;
+Draw::DrawContext *g_draw = nullptr;
 
 static u32 atlasPtr;
 static int atlasWidth;
@@ -79,7 +81,7 @@ static u32 paletteSize = sizeof(u16) * 16;
 static u32 vertexStart;
 static u32 vertexCount;
 
-// Used for formating text
+// Used for formatting text
 struct AtlasCharVertex
 {
 	float x;
@@ -123,7 +125,11 @@ struct PPGeTextDrawerImage {
 	TextStringEntry entry;
 	u32 ptr;
 };
-std::map<PPGeTextDrawerCacheKey, PPGeTextDrawerImage> textDrawerImages;
+static std::map<PPGeTextDrawerCacheKey, PPGeTextDrawerImage> textDrawerImages;
+
+void PPGeSetDrawContext(Draw::DrawContext *draw) {
+	g_draw = draw;
+}
 
 // Overwrite the current text lines buffer so it can be drawn later.
 void PPGePrepareText(const char *text, float x, float y, PPGeAlign align, float scale, float lineHeightScale,
@@ -135,13 +141,15 @@ void PPGePrepareText(const char *text, float x, float y, PPGeAlign align, float 
 // Clears the buffer and state when done.
 void PPGeDrawCurrentText(u32 color = 0xFFFFFFFF);
 
+static void PPGeDecimateTextImages(int age = 97);
+
 void PPGeSetTexture(u32 dataAddr, int width, int height);
 
 //only 0xFFFFFF of data is used
 static void WriteCmd(u8 cmd, u32 data) {
 	Memory::Write_U32((cmd << 24) | (data & 0xFFFFFF), dlWritePtr);
 	dlWritePtr += 4;
-	assert(dlWritePtr <= dlPtr + dlSize);
+	_dbg_assert_(dlWritePtr <= dlPtr + dlSize);
 }
 
 static void WriteCmdAddrWithBase(u8 cmd, u32 addr) {
@@ -180,7 +188,7 @@ static void Vertex(float x, float y, float u, float v, int tw, int th, u32 color
 		Memory::WriteStruct(dataWritePtr, &vtx);
 		dataWritePtr += sizeof(vtx);
 	}
-	assert(dataWritePtr <= dataPtr + dataSize);
+	_dbg_assert_(dataWritePtr <= dataPtr + dataSize);
 	vertexCount++;
 }
 
@@ -189,11 +197,22 @@ static void EndVertexDataAndDraw(int prim) {
 	WriteCmd(GE_CMD_PRIM, (prim << 16) | vertexCount);
 }
 
+bool PPGeIsFontTextureAddress(u32 addr) {
+	return addr == atlasPtr;
+}
+
 static u32 __PPGeDoAlloc(u32 &size, bool fromTop, const char *name) {
 	u32 ptr = kernelMemory.Alloc(size, fromTop, name);
-	// Didn't get it.
-	if (ptr == (u32)-1)
-		return 0;
+	// Didn't get it, try again after decimating images.
+	if (ptr == (u32)-1) {
+		PPGeDecimateTextImages(4);
+		PPGeImage::Decimate(4);
+
+		ptr = kernelMemory.Alloc(size, fromTop, name);
+		if (ptr == (u32)-1) {
+			return 0;
+		}
+	}
 	return ptr;
 }
 
@@ -213,7 +232,7 @@ void __PPGeSetupListArgs()
 
 void __PPGeInit() {
 	// PPGe isn't really important for headless, and LoadZIM takes a long time.
-	bool skipZIM = PSP_CoreParameter().gpuCore == GPUCORE_NULL || host->ShouldSkipUI();
+	bool skipZIM = host->ShouldSkipUI();
 
 	u8 *imageData[12]{};
 	int width[12]{};
@@ -282,23 +301,23 @@ void __PPGeDoState(PointerWrap &p)
 	if (!s)
 		return;
 
-	p.Do(atlasPtr);
-	p.Do(atlasWidth);
-	p.Do(atlasHeight);
-	p.Do(palette);
+	Do(p, atlasPtr);
+	Do(p, atlasWidth);
+	Do(p, atlasHeight);
+	Do(p, palette);
 
-	p.Do(savedContextPtr);
-	p.Do(savedContextSize);
+	Do(p, savedContextPtr);
+	Do(p, savedContextSize);
 
 	if (s == 1) {
 		listArgs = 0;
 	} else {
-		p.Do(listArgs);
+		Do(p, listArgs);
 	}
 
 	if (s >= 3) {
 		uint32_t sz = (uint32_t)textDrawerImages.size();
-		p.Do(sz);
+		Do(p, sz);
 
 		switch (p.mode) {
 		case PointerWrap::MODE_READ:
@@ -307,12 +326,12 @@ void __PPGeDoState(PointerWrap &p)
 				// We only care about the pointers, so we can free them.  We'll decimate right away.
 				PPGeTextDrawerCacheKey key{ StringFromFormat("__savestate__%d", i), -1, -1 };
 				textDrawerImages[key] = PPGeTextDrawerImage{};
-				p.Do(textDrawerImages[key].ptr);
+				Do(p, textDrawerImages[key].ptr);
 			}
 			break;
 		default:
 			for (const auto &im : textDrawerImages) {
-				p.Do(im.second.ptr);
+				Do(p, im.second.ptr);
 			}
 			break;
 		}
@@ -320,19 +339,19 @@ void __PPGeDoState(PointerWrap &p)
 		textDrawerImages.clear();
 	}
 
-	p.Do(dlPtr);
-	p.Do(dlWritePtr);
-	p.Do(dlSize);
+	Do(p, dlPtr);
+	Do(p, dlWritePtr);
+	Do(p, dlSize);
 
-	p.Do(dataPtr);
-	p.Do(dataWritePtr);
-	p.Do(dataSize);
+	Do(p, dataPtr);
+	Do(p, dataWritePtr);
+	Do(p, dataSize);
 
-	p.Do(vertexStart);
-	p.Do(vertexCount);
+	Do(p, vertexStart);
+	Do(p, vertexCount);
 
-	p.Do(char_lines);
-	p.Do(char_lines_metrics);
+	Do(p, char_lines);
+	Do(p, char_lines_metrics);
 }
 
 void __PPGeShutdown()
@@ -358,6 +377,10 @@ void __PPGeShutdown()
 
 	delete textDrawer;
 	textDrawer = nullptr;
+
+	for (auto im : textDrawerImages)
+		kernelMemory.Free(im.second.ptr);
+	textDrawerImages.clear();
 }
 
 void PPGeBegin()
@@ -419,8 +442,8 @@ void PPGeEnd()
 }
 
 void PPGeScissor(int x1, int y1, int x2, int y2) {
-	assert(x1 >= 0 && x1 <= 480 && x2 >= 0 && x2 <= 480);
-	assert(y1 >= 0 && y1 <= 272 && y2 >= 0 && y2 <= 272);
+	_dbg_assert_(x1 >= 0 && x1 <= 480 && x2 >= 0 && x2 <= 480);
+	_dbg_assert_(y1 >= 0 && y1 <= 272 && y2 >= 0 && y2 <= 272);
 	WriteCmd(GE_CMD_SCISSOR1, (y1 << 10) | x1);
 	WriteCmd(GE_CMD_SCISSOR2, ((y2 - 1) << 10) | (x2 - 1));
 }
@@ -704,8 +727,8 @@ static bool HasTextDrawer() {
 		return textDrawer != nullptr;
 	}
 
-	// TODO: Should we pass a draw_?
-	textDrawer = TextDrawer::Create(nullptr);
+	// TODO: Should we pass a draw_? Yes! UWP requires it.
+	textDrawer = TextDrawer::Create(g_draw);
 	if (textDrawer) {
 		textDrawer->SetFontScale(1.0f, 1.0f);
 		textDrawer->SetForcedDPIScale(1.0f);
@@ -900,6 +923,18 @@ static void PPGeDrawTextImage(PPGeTextDrawerImage im, float x, float y, const PP
 	PPGeSetDefaultTexture();
 }
 
+static void PPGeDecimateTextImages(int age) {
+	// Do this always, in case the platform has no TextDrawer but save state did.
+	for (auto it = textDrawerImages.begin(); it != textDrawerImages.end(); ) {
+		if (gpuStats.numFlips - it->second.entry.lastUsedFrame >= age) {
+			kernelMemory.Free(it->second.ptr);
+			it = textDrawerImages.erase(it);
+		} else {
+			++it;
+		}
+	}
+}
+
 void PPGeDrawText(const char *text, float x, float y, const PPGeStyle &style) {
 	if (!text || !strlen(text)) {
 		return;
@@ -907,8 +942,10 @@ void PPGeDrawText(const char *text, float x, float y, const PPGeStyle &style) {
 
 	if (HasTextDrawer()) {
 		PPGeTextDrawerImage im = PPGeGetTextImage(text, style, 480.0f - x, false);
-		PPGeDrawTextImage(im, x, y, style);
-		return;
+		if (im.ptr) {
+			PPGeDrawTextImage(im, x, y, style);
+			return;
+		}
 	}
 
 	if (style.hasShadow) {
@@ -951,6 +988,7 @@ void PPGeDrawTextWrapped(const char *text, float x, float y, float wrapWidth, fl
 	}
 
 	int zoom = (PSP_CoreParameter().pixelHeight + 479) / 480;
+	zoom = std::min(zoom, PSP_CoreParameter().renderScaleFactor);
 	float maxScaleDown = zoom == 1 ? 1.3f : 2.0f;
 
 	if (HasTextDrawer()) {
@@ -981,8 +1019,10 @@ void PPGeDrawTextWrapped(const char *text, float x, float y, float wrapWidth, fl
 		}
 
 		PPGeTextDrawerImage im = PPGeGetTextImage(s.c_str(), adjustedStyle, wrapWidth <= 0 ? 480.0f - x : wrapWidth, true);
-		PPGeDrawTextImage(im, x, y, adjustedStyle);
-		return;
+		if (im.ptr) {
+			PPGeDrawTextImage(im, x, y, adjustedStyle);
+			return;
+		}
 	}
 
 	int sx = style.hasShadow ? 1 : 0;
@@ -1124,13 +1164,12 @@ void PPGeDrawImage(ImageID atlasImage, float x, float y, float w, float h, const
 	EndVertexDataAndDraw(GE_PRIM_RECTANGLES);
 }
 
-void PPGeDrawImage(float x, float y, float w, float h, float u1, float v1, float u2, float v2, int tw, int th, u32 color)
-{
+void PPGeDrawImage(float x, float y, float w, float h, float u1, float v1, float u2, float v2, int tw, int th, const PPGeImageStyle &style) {
 	if (!dlPtr)
 		return;
 	BeginVertexData();
-	Vertex(x, y, u1, v1, tw, th, color);
-	Vertex(x + w, y + h, u2, v2, tw, th, color);
+	Vertex(x, y, u1, v1, tw, th, style.color);
+	Vertex(x + w, y + h, u2, v2, tw, th, style.color);
 	EndVertexDataAndDraw(GE_PRIM_RECTANGLES);
 }
 
@@ -1201,7 +1240,7 @@ bool PPGeImage::Load() {
 	unsigned char *textureData;
 	int success;
 	if (filename_.empty()) {
-		success = pngLoadPtr(Memory::GetPointer(png_), size_, &width_, &height_, &textureData, false);
+		success = pngLoadPtr(Memory::GetPointer(png_), size_, &width_, &height_, &textureData);
 	} else {
 		std::vector<u8> pngData;
 		if (pspFileSystem.ReadEntireFile(filename_, pngData) < 0) {
@@ -1209,14 +1248,15 @@ bool PPGeImage::Load() {
 			return false;
 		}
 
-		success = pngLoadPtr((const unsigned char *)&pngData[0], pngData.size(), &width_, &height_, &textureData, false);
+		success = pngLoadPtr((const unsigned char *)&pngData[0], pngData.size(), &width_, &height_, &textureData);
 	}
 	if (!success) {
 		WARN_LOG(SCEGE, "Bad PPGeImage - not a valid png");
 		return false;
 	}
 
-	u32 texSize = width_ * height_ * 4;
+	u32 dataSize = width_ * height_ * 4;
+	u32 texSize = dataSize + width_ * 4;
 	texture_ = __PPGeDoAlloc(texSize, true, "Savedata Icon");
 	if (texture_ == 0) {
 		free(textureData);
@@ -1224,7 +1264,8 @@ bool PPGeImage::Load() {
 		return false;
 	}
 
-	Memory::Memcpy(texture_, textureData, texSize);
+	Memory::Memcpy(texture_, textureData, dataSize, "PPGeTex");
+	Memory::Memset(texture_ + dataSize, 0, texSize - dataSize, "PPGeTexClear");
 	free(textureData);
 
 	lastFrame_ = gpuStats.numFlips;
@@ -1245,13 +1286,13 @@ void PPGeImage::DoState(PointerWrap &p) {
 	if (!s)
 		return;
 
-	p.Do(filename_);
-	p.Do(png_);
-	p.Do(size_);
-	p.Do(texture_);
-	p.Do(width_);
-	p.Do(height_);
-	p.Do(lastFrame_);
+	Do(p, filename_);
+	Do(p, png_);
+	Do(p, size_);
+	Do(p, texture_);
+	Do(p, width_);
+	Do(p, height_);
+	Do(p, lastFrame_);
 }
 
 void PPGeImage::CompatLoad(u32 texture, int width, int height) {
@@ -1261,9 +1302,8 @@ void PPGeImage::CompatLoad(u32 texture, int width, int height) {
 	height_ = height;
 }
 
-void PPGeImage::Decimate() {
-	static const int TOO_OLD_AGE = 30;
-	int tooOldFrame = gpuStats.numFlips - TOO_OLD_AGE;
+void PPGeImage::Decimate(int age) {
+	int tooOldFrame = gpuStats.numFlips - age;
 	for (size_t i = 0; i < loadedTextures_.size(); ++i) {
 		if (loadedTextures_[i]->lastFrame_ < tooOldFrame) {
 			loadedTextures_[i]->Free();
@@ -1292,15 +1332,6 @@ void PPGeNotifyFrame() {
 		textDrawer->OncePerFrame();
 	}
 
-	// Do this always, in case the platform has no TextDrawer but save state did.
-	for (auto it = textDrawerImages.begin(); it != textDrawerImages.end(); ) {
-		if (it->second.entry.lastUsedFrame - gpuStats.numFlips >= 97) {
-			kernelMemory.Free(it->second.ptr);
-			it = textDrawerImages.erase(it);
-		} else {
-			++it;
-		}
-	}
-
+	PPGeDecimateTextImages();
 	PPGeImage::Decimate();
 }

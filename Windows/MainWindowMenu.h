@@ -1,8 +1,8 @@
 #pragma once
 
 #include "Common/CommonWindows.h"
-#include "Common/KeyMap.h"
 #include <Windowsx.h>
+#include "Core/System.h"
 
 namespace MainWindow {
 	void MainWindowMenu_Process(HWND hWnd, WPARAM wParam);

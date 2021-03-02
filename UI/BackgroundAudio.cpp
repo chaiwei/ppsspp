@@ -1,16 +1,17 @@
 #include <string>
 #include <mutex>
 
-#include "base/logging.h"
-#include "base/timeutil.h"
-#include "file/chunk_file.h"
-#include "file/vfs.h"
-#include "ui/root.h"
+#include "Common/File/VFS/VFS.h"
+#include "Common/UI/Root.h"
 
 #include "Common/CommonTypes.h"
+#include "Common/Data/Format/RIFF.h"
+#include "Common/Log.h"
+#include "Common/Serialize/SerializeFuncs.h"
+#include "Common/TimeUtil.h"
+#include "Common/Data/Collections/FixedSizeQueue.h"
 #include "Core/HW/SimpleAudioDec.h"
 #include "Core/HLE/__sceAudio.h"
-#include "Common/FixedSizeQueue.h"
 #include "GameInfoCache.h"
 #include "Core/Config.h"
 #include "UI/BackgroundAudio.h"
@@ -83,9 +84,9 @@ void WavData::Read(RIFFReader &file_) {
 				}
 			}
 			file_.Ascend();
-			// ILOG("got fmt data: %i", samplesPerSec);
+			// INFO_LOG(AUDIO, "got fmt data: %i", samplesPerSec);
 		} else {
-			ELOG("Error - no format chunk in wav");
+			ERROR_LOG(AUDIO, "Error - no format chunk in wav");
 			file_.Ascend();
 			return;
 		}
@@ -141,20 +142,20 @@ void WavData::Read(RIFFReader &file_) {
 			if (num_channels == 1 || num_channels == 2) {
 				file_.ReadData(raw_data, numBytes);
 			} else {
-				ELOG("Error - bad blockalign or channels");
+				ERROR_LOG(AUDIO, "Error - bad blockalign or channels");
 				free(raw_data);
 				raw_data = nullptr;
 				return;
 			}
 			file_.Ascend();
 		} else {
-			ELOG("Error - no data chunk in wav");
+			ERROR_LOG(AUDIO, "Error - no data chunk in wav");
 			file_.Ascend();
 			return;
 		}
 		file_.Ascend();
 	} else {
-		ELOG("Could not descend into RIFF file.");
+		ERROR_LOG(AUDIO, "Could not descend into RIFF file.");
 		return;
 	}
 	sample_rate = samplesPerSec;
@@ -177,7 +178,7 @@ public:
 		if (wave_.codec == PSP_CODEC_AT3) {
 			decoder_->SetExtraData(&wave_.at3_extradata[2], 14, wave_.raw_bytes_per_frame);
 		}
-		ILOG("read ATRAC, frames: %d, rate %d", wave_.numFrames, wave_.sample_rate);
+		INFO_LOG(AUDIO, "read ATRAC, frames: %d, rate %d", wave_.numFrames, wave_.sample_rate);
 	}
 
 	~AT3PlusReader() {
@@ -247,6 +248,7 @@ BackgroundAudio g_BackgroundAudio;
 
 BackgroundAudio::BackgroundAudio() {
 	buffer = new int[BUFSIZE]();
+	sndLoadPending_.store(false);
 }
 
 BackgroundAudio::~BackgroundAudio() {
@@ -265,8 +267,10 @@ BackgroundAudio::Sample *BackgroundAudio::LoadSample(const std::string &path) {
 	WavData wave;
 	wave.Read(reader);
 
+	delete [] data;
+
 	if (wave.num_channels != 2 || wave.sample_rate != 44100 || wave.raw_bytes_per_frame != 4) {
-		ELOG("Wave format not supported for mixer playback. Must be 16-bit raw stereo. '%s'", path.c_str());
+		ERROR_LOG(AUDIO, "Wave format not supported for mixer playback. Must be 16-bit raw stereo. '%s'", path.c_str());
 		return nullptr;
 	}
 
@@ -305,23 +309,24 @@ void BackgroundAudio::Clear(bool hard) {
 		at3Reader_ = nullptr;
 	}
 	playbackOffset_ = 0;
+	sndLoadPending_ = false;
 }
 
 void BackgroundAudio::SetGame(const std::string &path) {
-	time_update();
-
-	std::lock_guard<std::mutex> lock(mutex_);
 	if (path == bgGamePath_) {
 		// Do nothing
 		return;
 	}
 
-	if (path.size() == 0) {
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (path.empty()) {
 		Clear(false);
+		sndLoadPending_ = false;
 		fadingOut_ = true;
 	} else {
 		Clear(true);
 		gameLastChanged_ = time_now_d();
+		sndLoadPending_ = true;
 		fadingOut_ = false;
 	}
 	volume_ = 1.0f;
@@ -329,8 +334,6 @@ void BackgroundAudio::SetGame(const std::string &path) {
 }
 
 int BackgroundAudio::Play() {
-	time_update();
-
 	std::lock_guard<std::mutex> lock(mutex_);
 
 	// Immediately stop the sound if it is turned off while playing.
@@ -344,14 +347,12 @@ int BackgroundAudio::Play() {
 	int sz = lastPlaybackTime_ <= 0.0 ? 44100 / 60 : (int)((now - lastPlaybackTime_) * 44100);
 	sz = std::min(BUFSIZE / 2, sz);
 	if (at3Reader_) {
-		if (sz >= 16) {
-			if (at3Reader_->Read(buffer, sz)) {
-				if (fadingOut_) {
-					for (int i = 0; i < sz*2; i += 2) {
-						buffer[i] *= volume_;
-						buffer[i + 1] *= volume_;
-						volume_ += delta_;
-					}
+		if (at3Reader_->Read(buffer, sz)) {
+			if (fadingOut_) {
+				for (int i = 0; i < sz*2; i += 2) {
+					buffer[i] *= volume_;
+					buffer[i + 1] *= volume_;
+					volume_ += delta_;
 				}
 			}
 		}
@@ -400,27 +401,24 @@ int BackgroundAudio::Play() {
 void BackgroundAudio::Update() {
 	// If there's a game, and some time has passed since the selected game
 	// last changed... (to prevent crazy amount of reads when skipping through a list)
-	if (bgGamePath_.size() && (time_now_d() - gameLastChanged_ > 0.5)) {
+	if (sndLoadPending_ && (time_now_d() - gameLastChanged_ > 0.5)) {
 		std::lock_guard<std::mutex> lock(mutex_);
-		if (!at3Reader_) {
-			// Grab some audio from the current game and play it.
-			if (!g_gameInfoCache)
-				return;
+		// Already loaded somehow?  Or no game info cache?
+		if (at3Reader_ || !g_gameInfoCache)
+			return;
 
-			std::shared_ptr<GameInfo> gameInfo = g_gameInfoCache->GetInfo(NULL, bgGamePath_, GAMEINFO_WANTSND);
-			if (!gameInfo)
-				return;
-
-			if (gameInfo->pending) {
-				// Should try again shortly..
-				return;
-			}
-
-			if (gameInfo->sndFileData.size()) {
-				const std::string &data = gameInfo->sndFileData;
-				at3Reader_ = new AT3PlusReader(data);
-				lastPlaybackTime_ = 0.0;
-			}
+		// Grab some audio from the current game and play it.
+		std::shared_ptr<GameInfo> gameInfo = g_gameInfoCache->GetInfo(nullptr, bgGamePath_, GAMEINFO_WANTSND);
+		if (!gameInfo || gameInfo->pending) {
+			// Should try again shortly..
+			return;
 		}
+
+		const std::string &data = gameInfo->sndFileData;
+		if (!data.empty()) {
+			at3Reader_ = new AT3PlusReader(data);
+			lastPlaybackTime_ = 0.0;
+		}
+		sndLoadPending_ = false;
 	}
 }

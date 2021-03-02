@@ -21,11 +21,12 @@
 #include <string>
 
 #include "Common/Common.h"
+#include "Common/Log.h"
 #include "Common/Swap.h"
 
 class PointerWrap;
 
-enum {
+enum : u32 {
 	SCE_KERNEL_ERROR_OK                               = 0,
 	SCE_KERNEL_ERROR_ALREADY                          = 0x80000020,
 	SCE_KERNEL_ERROR_BUSY                             = 0x80000021,
@@ -499,7 +500,7 @@ public:
 		}
 	}
 
-	int ListIDType(int type, SceUID *uids, int count) const {
+	int ListIDType(int type, SceUID_le *uids, int count) const {
 		int total = 0;
 		for (int i = 0; i < maxCount; i++) {
 			if (!occupied[i]) {

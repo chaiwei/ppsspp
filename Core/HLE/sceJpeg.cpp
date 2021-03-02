@@ -15,10 +15,12 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include <algorithm>
 #include "ext/jpge/jpgd.h"
 
 #include "Common/Common.h"
-#include "Common/ChunkFile.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/FunctionWrappers.h"
 #include "Core/HLE/sceJpeg.h"
@@ -27,13 +29,19 @@
 #include "Core/MemMap.h"
 #include "Core/Reporting.h"
 
-//Uncomment if you want to dump JPEGs loaded through sceJpeg to a file
-//#define JPEG_DEBUG
+// Uncomment if you want to dump JPEGs loaded through sceJpeg to a file
+// #define JPEG_DEBUG
 #ifdef JPEG_DEBUG
 #include "ext/xxhash.h"
 #endif
 
-#include <algorithm>
+struct u24_be {
+	unsigned char value[3];
+
+	operator unsigned int() {
+		return 0x00000000 | (value[0] << 16) | (value[1] << 8) | (value[2] << 0);
+	}
+};
 
 static int mjpegWidth, mjpegHeight;
 
@@ -47,8 +55,8 @@ void __JpegDoState(PointerWrap &p) {
 	if (!s)
 		return;
 
-	p.Do(mjpegWidth);
-	p.Do(mjpegHeight);
+	Do(p, mjpegWidth);
+	Do(p, mjpegHeight);
 }
 
 static int getWidthHeight(int width, int height) {
@@ -76,7 +84,7 @@ static void __JpegCsc(u32 imageAddr, u32 yCbCrAddr, int widthHeight, int bufferW
 	int width = (widthHeight >> 16) & 0xFFF;
 	int lineWidth = std::min(width, bufferWidth);
 	int skipEndOfLine = std::max(0, bufferWidth - lineWidth);
-	u32 *imageBuffer = (u32*)Memory::GetPointer(imageAddr);
+	u32_le *imageBuffer = (u32_le *)Memory::GetPointer(imageAddr);
 	int sizeY = width * height;
 	int sizeCb = sizeY >> 2;
 	u8 *Y = (u8*)Memory::GetPointer(yCbCrAddr);
@@ -142,7 +150,7 @@ static int __DecodeJpeg(u32 jpegAddr, int jpegSize, u32 imageAddr) {
 
 	if (actual_components == 3) {
 			u24_be *imageBuffer = (u24_be*)jpegBuf;
-			u32 *abgr = (u32*)Memory::GetPointer(imageAddr);
+			u32_le *abgr = (u32_le *)Memory::GetPointer(imageAddr);
 			int pspWidth = 0;
 			for (int w = 2; w <= 4096; w *= 2) {
 				if (w >= width && w >= height) {

@@ -18,11 +18,12 @@
 #include <algorithm>
 #include <inttypes.h>
 
-#include "gfx_es2/draw_buffer.h"
-#include "ui/ui_context.h"
-#include "ui/view.h"
-#include "profiler/profiler.h"
+#include "Common/Render/DrawBuffer.h"
+#include "Common/UI/Context.h"
+#include "Common/UI/View.h"
+#include "Common/Profiler/Profiler.h"
 
+#ifdef USE_PROFILER
 static const uint32_t nice_colors[] = {
 	0xFF8040,
 	0x80FF40,
@@ -44,6 +45,7 @@ static const uint32_t nice_colors[] = {
 	0xF8F8F8,
 	0x33FFFF,
 };
+#endif
 
 enum ProfileCatStatus {
 	PROFILE_CAT_VISIBLE = 0,

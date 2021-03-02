@@ -18,10 +18,8 @@
 #include <algorithm>
 #include <cstdio>
 
-#include "base/stringutil.h"
-#include "file/file_util.h"
-#include "Common/FileUtil.h"
-
+#include "Common/File/FileUtil.h"
+#include "Common/StringUtils.h"
 #include "Core/FileLoaders/CachingFileLoader.h"
 #include "Core/FileLoaders/DiskCachingFileLoader.h"
 #include "Core/FileLoaders/HTTPFileLoader.h"
@@ -42,11 +40,17 @@ void RegisterFileLoaderFactory(std::string prefix, std::unique_ptr<FileLoaderFac
 }
 
 FileLoader *ConstructFileLoader(const std::string &filename) {
-	if (filename.find("http://") == 0 || filename.find("https://") == 0)
-		return new CachingFileLoader(new DiskCachingFileLoader(new RetryingFileLoader(new HTTPFileLoader(filename))));
+	if (filename.find("http://") == 0 || filename.find("https://") == 0) {
+		FileLoader *baseLoader = new RetryingFileLoader(new HTTPFileLoader(filename));
+		// For headless, avoid disk caching since it's usually used for tests that might mutate.
+		if (!PSP_CoreParameter().headLess) {
+			baseLoader = new DiskCachingFileLoader(baseLoader);
+		}
+		return new CachingFileLoader(baseLoader);
+	}
 
 	for (auto &iter : factories) {
-		if (startsWith(iter.first, filename)) {
+		if (startsWith(filename, iter.first)) {
 			return iter.second->ConstructFileLoader(filename);
 		}
 	}
@@ -122,10 +126,11 @@ IdentifiedFileType Identify_File(FileLoader *fileLoader) {
 
 	size_t readSize = fileLoader->ReadAt(0, 4, 1, &id);
 	if (readSize != 1) {
+		ERROR_LOG(LOADER, "Failed to read identification bytes");
 		return IdentifiedFileType::ERROR_IDENTIFYING;
 	}
 
-	u32 psar_offset = 0, psar_id = 0;
+	u32_le psar_offset = 0, psar_id = 0;
 	u32 _id = id;
 	if (!memcmp(&_id, "PK\x03\x04", 4) || !memcmp(&_id, "PK\x05\x06", 4) || !memcmp(&_id, "PK\x07\x08", 4)) {
 		return IdentifiedFileType::ARCHIVE_ZIP;
@@ -289,7 +294,7 @@ bool LoadFile(FileLoader **fileLoaderPtr, std::string *error_string) {
 		break;
 
 	case IdentifiedFileType::ERROR_IDENTIFYING:
-		ERROR_LOG(LOADER, "Could not read file");
+		ERROR_LOG(LOADER, "Could not read file enough to identify it");
 		*error_string = fileLoader ? fileLoader->LatestError() : "";
 		if (error_string->empty())
 			*error_string = "Error reading file";

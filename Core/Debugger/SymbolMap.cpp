@@ -31,10 +31,12 @@
 #include <algorithm>
 #include <memory>
 
-#include "util/text/utf8.h"
 #include "zlib.h"
+
 #include "Common/CommonTypes.h"
-#include "Common/FileUtil.h"
+#include "Common/Data/Encoding/Utf8.h"
+#include "Common/Log.h"
+#include "Common/File/FileUtil.h"
 #include "Common/StringUtils.h"
 #include "Core/MemMap.h"
 #include "Core/Debugger/SymbolMap.h"
@@ -1043,7 +1045,6 @@ void SymbolMap::FillSymbolListBox(HWND listbox,SymbolType symType) {
 			SendMessage(listbox, LB_INITSTORAGE, (WPARAM)activeFunctions.size(), (LPARAM)activeFunctions.size() * 30);
 
 			for (auto it = activeFunctions.begin(), end = activeFunctions.end(); it != end; ++it) {
-				const FunctionEntry& entry = it->second;
 				const char* name = GetLabelName(it->first);
 				if (name != NULL)
 					wsprintf(temp, L"%S", name);
@@ -1067,7 +1068,6 @@ void SymbolMap::FillSymbolListBox(HWND listbox,SymbolType symType) {
 			}
 
 			for (auto it = activeData.begin(), end = activeData.end(); it != end; ++it) {
-				const DataEntry& entry = it->second;
 				const char* name = GetLabelName(it->first);
 
 				if (name != NULL)

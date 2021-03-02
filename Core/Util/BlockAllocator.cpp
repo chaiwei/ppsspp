@@ -18,8 +18,10 @@
 #include <cstring>
 
 #include "Common/Log.h"
-#include "Common/ChunkFile.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
 #include "Common/StringUtils.h"
+#include "Core/Debugger/MemBlockInfo.h"
 #include "Core/Util/BlockAllocator.h"
 #include "Core/Reporting.h"
 
@@ -34,14 +36,14 @@ BlockAllocator::~BlockAllocator()
 	Shutdown();
 }
 
-void BlockAllocator::Init(u32 rangeStart, u32 rangeSize)
-{
+void BlockAllocator::Init(u32 rangeStart, u32 rangeSize, bool suballoc) {
 	Shutdown();
 	rangeStart_ = rangeStart;
 	rangeSize_ = rangeSize;
 	//Initial block, covering everything
 	top_ = new Block(rangeStart_, rangeSize_, false, NULL, NULL);
 	bottom_ = top_;
+	suballoc_ = suballoc;
 }
 
 void BlockAllocator::Shutdown()
@@ -89,7 +91,7 @@ u32 BlockAllocator::AllocAligned(u32 &size, u32 sizeGrain, u32 grain, bool fromT
 					if (offset >= grain_)
 						InsertFreeBefore(&b, offset);
 					b.taken = true;
-					b.SetTag(tag);
+					b.SetAllocated(tag, suballoc_);
 					return b.start;
 				}
 				else
@@ -98,7 +100,7 @@ u32 BlockAllocator::AllocAligned(u32 &size, u32 sizeGrain, u32 grain, bool fromT
 					if (offset >= grain_)
 						InsertFreeBefore(&b, offset);
 					b.taken = true;
-					b.SetTag(tag);
+					b.SetAllocated(tag, suballoc_);
 					return b.start;
 				}
 			}
@@ -119,7 +121,7 @@ u32 BlockAllocator::AllocAligned(u32 &size, u32 sizeGrain, u32 grain, bool fromT
 					if (offset >= grain_)
 						InsertFreeAfter(&b, offset);
 					b.taken = true;
-					b.SetTag(tag);
+					b.SetAllocated(tag, suballoc_);
 					return b.start;
 				}
 				else
@@ -128,7 +130,7 @@ u32 BlockAllocator::AllocAligned(u32 &size, u32 sizeGrain, u32 grain, bool fromT
 					if (offset >= grain_)
 						InsertFreeAfter(&b, offset);
 					b.taken = true;
-					b.SetTag(tag);
+					b.SetAllocated(tag, suballoc_);
 					return b.start;
 				}
 			}
@@ -163,13 +165,13 @@ u32 BlockAllocator::AllocAt(u32 position, u32 size, const char *tag)
 		alignedPosition &= ~(grain_ - 1);
 
 		// Since the position was decreased, size must increase.
-		alignedSize += alignedPosition - position;
+		alignedSize += position - alignedPosition;
 	}
 
 	// Upalign size to grain.
 	alignedSize = (alignedSize + grain_ - 1) & ~(grain_ - 1);
 	// Tell the caller the allocated size from their requested starting position.
-	size = alignedSize - (alignedPosition - position);
+	size = alignedSize - (position - alignedPosition);
 
 	Block *bp = GetBlockFromAddress(alignedPosition);
 	if (bp != NULL)
@@ -194,7 +196,7 @@ u32 BlockAllocator::AllocAt(u32 position, u32 size, const char *tag)
 				if (b.size != alignedSize)
 					InsertFreeAfter(&b, b.size - alignedSize);
 				b.taken = true;
-				b.SetTag(tag);
+				b.SetAllocated(tag, suballoc_);
 				CheckBlocks();
 				return position;
 			}
@@ -204,7 +206,7 @@ u32 BlockAllocator::AllocAt(u32 position, u32 size, const char *tag)
 				if (b.size > alignedSize)
 					InsertFreeAfter(&b, b.size - alignedSize);
 				b.taken = true;
-				b.SetTag(tag);
+				b.SetAllocated(tag, suballoc_);
 
 				return position;
 			}
@@ -267,6 +269,7 @@ bool BlockAllocator::Free(u32 position)
 	Block *b = GetBlockFromAddress(position);
 	if (b && b->taken)
 	{
+		NotifyMemInfo(suballoc_ ? MemBlockFlags::SUB_FREE : MemBlockFlags::FREE, b->start, b->size, "");
 		b->taken = false;
 		MergeFreeBlocks(b);
 		return true;
@@ -283,6 +286,7 @@ bool BlockAllocator::FreeExact(u32 position)
 	Block *b = GetBlockFromAddress(position);
 	if (b && b->taken && b->start == position)
 	{
+		NotifyMemInfo(suballoc_ ? MemBlockFlags::SUB_FREE : MemBlockFlags::FREE, b->start, b->size, "");
 		b->taken = false;
 		MergeFreeBlocks(b);
 		return true;
@@ -389,13 +393,13 @@ u32 BlockAllocator::GetBlockSizeFromAddress(u32 addr) const
 
 void BlockAllocator::ListBlocks() const
 {
-	INFO_LOG(SCEKERNEL,"-----------");
+	DEBUG_LOG(SCEKERNEL,"-----------");
 	for (const Block *bp = bottom_; bp != NULL; bp = bp->next)
 	{
 		const Block &b = *bp;
-		INFO_LOG(SCEKERNEL, "Block: %08x - %08x size %08x taken=%i tag=%s", b.start, b.start+b.size, b.size, b.taken ? 1:0, b.tag);
+		DEBUG_LOG(SCEKERNEL, "Block: %08x - %08x size %08x taken=%i tag=%s", b.start, b.start+b.size, b.size, b.taken ? 1:0, b.tag);
 	}
-	INFO_LOG(SCEKERNEL,"-----------");
+	DEBUG_LOG(SCEKERNEL,"-----------");
 }
 
 u32 BlockAllocator::GetLargestFreeBlockSize() const
@@ -442,7 +446,7 @@ void BlockAllocator::DoState(PointerWrap &p)
 	if (p.mode == p.MODE_READ)
 	{
 		Shutdown();
-		p.Do(count);
+		Do(p, count);
 
 		bottom_ = new Block(0, 0, false, NULL, NULL);
 		bottom_->DoState(p);
@@ -460,7 +464,7 @@ void BlockAllocator::DoState(PointerWrap &p)
 	{
 		for (const Block *bp = bottom_; bp != NULL; bp = bp->next)
 			++count;
-		p.Do(count);
+		Do(p, count);
 
 		bottom_->DoState(p);
 		--count;
@@ -473,9 +477,9 @@ void BlockAllocator::DoState(PointerWrap &p)
 		}
 	}
 
-	p.Do(rangeStart_);
-	p.Do(rangeSize_);
-	p.Do(grain_);
+	Do(p, rangeStart_);
+	Do(p, rangeSize_);
+	Do(p, grain_);
 }
 
 BlockAllocator::Block::Block(u32 _start, u32 _size, bool _taken, Block *_prev, Block *_next)
@@ -484,8 +488,8 @@ BlockAllocator::Block::Block(u32 _start, u32 _size, bool _taken, Block *_prev, B
 	truncate_cpy(tag, "(untitled)");
 }
 
-void BlockAllocator::Block::SetTag(const char *_tag)
-{
+void BlockAllocator::Block::SetAllocated(const char *_tag, bool suballoc) {
+	NotifyMemInfo(suballoc ? MemBlockFlags::SUB_ALLOC : MemBlockFlags::ALLOC, start, size, _tag ? _tag : "");
 	if (_tag)
 		truncate_cpy(tag, _tag);
 	else
@@ -498,13 +502,13 @@ void BlockAllocator::Block::DoState(PointerWrap &p)
 	if (!s)
 		return;
 
-	p.Do(start);
-	p.Do(size);
-	p.Do(taken);
+	Do(p, start);
+	Do(p, size);
+	Do(p, taken);
 	// Since we use truncate_cpy, the empty space is not zeroed.  Zero it now.
 	// This avoids saving uninitialized memory.
 	size_t tagLen = strlen(tag);
 	if (tagLen != sizeof(tag))
 		memset(tag + tagLen, 0, sizeof(tag) - tagLen);
-	p.DoArray(tag, sizeof(tag));
+	DoArray(p, tag, sizeof(tag));
 }

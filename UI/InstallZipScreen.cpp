@@ -15,14 +15,12 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#include "base/logging.h"
-#include "i18n/i18n.h"
-#include "ui/ui.h"
-#include "ui/view.h"
-#include "ui/viewgroup.h"
-#include "file/file_util.h"
+#include "Common/UI/UI.h"
+#include "Common/UI/View.h"
+#include "Common/UI/ViewGroup.h"
 
 #include "Common/StringUtils.h"
+#include "Common/Data/Text/I18n.h"
 #include "Core/Util/GameManager.h"
 #include "UI/InstallZipScreen.h"
 #include "UI/MainScreen.h"
@@ -118,12 +116,16 @@ void InstallZipScreen::update() {
 			progressBar_->SetVisibility(V_VISIBLE);
 			progressBar_->SetProgress(g_GameManager.GetCurrentInstallProgressPercentage());
 		}
-		backChoice_->SetEnabled(false);
+		if (backChoice_) {
+			backChoice_->SetEnabled(false);
+		}
 	} else {
 		if (progressBar_) {
 			progressBar_->SetVisibility(V_GONE);
 		}
-		backChoice_->SetEnabled(true);
+		if (backChoice_) {
+			backChoice_->SetEnabled(true);
+		}
 		std::string err = g_GameManager.GetInstallError();
 		if (!err.empty()) {
 			if (doneView_)

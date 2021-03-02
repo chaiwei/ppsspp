@@ -16,16 +16,23 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include "ppsspp_config.h"
+#ifdef __MINGW32__
+#include <unistd.h>
+#ifndef _POSIX_THREAD_SAFE_FUNCTIONS
+#define _POSIX_THREAD_SAFE_FUNCTIONS 200112L
+#endif
+#endif
+#include <ctime>
 
-#include "Common/FileUtil.h"
+#include "Common/File/FileUtil.h"
 #include "Common/StringUtils.h"
-#include "Common/ChunkFile.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
 #include "Core/FileSystems/VirtualDiscFileSystem.h"
 #include "Core/FileSystems/ISOFileSystem.h"
 #include "Core/HLE/sceKernel.h"
 #include "Core/Reporting.h"
-#include "file/zip_read.h"
-#include "util/text/utf8.h"
+#include "Common/Data/Encoding/Utf8.h"
 
 #ifdef _WIN32
 #include "Common/CommonWindows.h"
@@ -167,18 +174,18 @@ void VirtualDiscFileSystem::DoState(PointerWrap &p)
 	int fileListSize = (int)fileList.size();
 	int entryCount = (int)entries.size();
 
-	p.Do(fileListSize);
-	p.Do(entryCount);
-	p.Do(currentBlockIndex);
+	Do(p, fileListSize);
+	Do(p, entryCount);
+	Do(p, currentBlockIndex);
 
 	FileListEntry dummy = {""};
 	fileList.resize(fileListSize, dummy);
 
 	for (int i = 0; i < fileListSize; i++)
 	{
-		p.Do(fileList[i].fileName);
-		p.Do(fileList[i].firstBlock);
-		p.Do(fileList[i].totalSize);
+		Do(p, fileList[i].fileName);
+		Do(p, fileList[i].firstBlock);
+		Do(p, fileList[i].totalSize);
 	}
 
 	if (p.mode == p.MODE_READ)
@@ -190,12 +197,12 @@ void VirtualDiscFileSystem::DoState(PointerWrap &p)
 			u32 fd = 0;
 			OpenFileEntry of;
 
-			p.Do(fd);
-			p.Do(of.fileIndex);
-			p.Do(of.type);
-			p.Do(of.curOffset);
-			p.Do(of.startOffset);
-			p.Do(of.size);
+			Do(p, fd);
+			Do(p, of.fileIndex);
+			Do(p, of.type);
+			Do(p, of.curOffset);
+			Do(p, of.startOffset);
+			Do(p, of.size);
 
 			// open file
 			if (of.type != VFILETYPE_ISO) {
@@ -222,17 +229,17 @@ void VirtualDiscFileSystem::DoState(PointerWrap &p)
 		{
 			OpenFileEntry &of = it->second;
 
-			p.Do(it->first);
-			p.Do(of.fileIndex);
-			p.Do(of.type);
-			p.Do(of.curOffset);
-			p.Do(of.startOffset);
-			p.Do(of.size);
+			Do(p, it->first);
+			Do(p, of.fileIndex);
+			Do(p, of.type);
+			Do(p, of.curOffset);
+			Do(p, of.startOffset);
+			Do(p, of.size);
 		}
 	}
 
 	if (s >= 2) {
-		p.Do(lastReadBlock_);
+		Do(p, lastReadBlock_);
 	} else {
 		lastReadBlock_ = 0;
 	}
@@ -365,7 +372,7 @@ int VirtualDiscFileSystem::OpenFile(std::string filename, FileAccess access, con
 
 		if (!success) {
 #ifdef _WIN32
-			ERROR_LOG(FILESYS, "VirtualDiscFileSystem::OpenFile: FAILED, %i", GetLastError());
+			ERROR_LOG(FILESYS, "VirtualDiscFileSystem::OpenFile: FAILED, %i", (int)GetLastError());
 #else
 			ERROR_LOG(FILESYS, "VirtualDiscFileSystem::OpenFile: FAILED");
 #endif
@@ -391,7 +398,7 @@ int VirtualDiscFileSystem::OpenFile(std::string filename, FileAccess access, con
 
 	if (!success) {
 #ifdef _WIN32
-		ERROR_LOG(FILESYS, "VirtualDiscFileSystem::OpenFile: FAILED, %i - access = %i", GetLastError(), (int)access);
+		ERROR_LOG(FILESYS, "VirtualDiscFileSystem::OpenFile: FAILED, %i - access = %i", (int)GetLastError(), (int)access);
 #else
 		ERROR_LOG(FILESYS, "VirtualDiscFileSystem::OpenFile: FAILED, access = %i", (int)access);
 #endif

@@ -37,7 +37,7 @@
 // All functions should have CONDITIONAL_DISABLE, so we can narrow things down to a file quickly.
 // Currently known non working ones should have DISABLE.
 
-// #define CONDITIONAL_DISABLE { Comp_Generic(op); return; }
+// #define CONDITIONAL_DISABLE(flag) { Comp_Generic(op); return; }
 #define CONDITIONAL_DISABLE(flag) if (opts.disableFlags & (uint32_t)JitDisable::flag) { Comp_Generic(op); return; }
 #define DISABLE { Comp_Generic(op); return; }
 #define INVALIDOP { Comp_Generic(op); return; }
@@ -47,9 +47,9 @@ namespace MIPSComp {
 void IRFrontend::Comp_IType(MIPSOpcode op) {
 	CONDITIONAL_DISABLE(ALU_IMM);
 
-	s32 simm = (s32)_IMM16;  // sign extension
 	u32 uimm = (u16)_IMM16;
-	u32 suimm = (u32)(s32)simm;
+	s32 simm = SignExtend16ToS32(op);
+	u32 suimm = SignExtend16ToU32(op);
 
 	MIPSGPReg rt = _RT;
 	MIPSGPReg rs = _RS;
@@ -274,7 +274,7 @@ void IRFrontend::Comp_Allegrex(MIPSOpcode op) {
 		return;
 
 	switch ((op >> 6) & 31) {
-	case 16: // seb	// R(rd) = (u32)(s32)(s8)(u8)R(rt);
+	case 16: // seb	// R(rd) = SignExtend8ToU32(R(rt));
 		ir.Write(IROp::Ext8to32, rd, rt);
 		break;
 

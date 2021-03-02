@@ -20,17 +20,17 @@
 #include <vector>
 #include <string>
 
-#include "base/logging.h"
-#include "base/timeutil.h"
-#include "profiler/profiler.h"
+#include "Common/Profiler/Profiler.h"
 
+#include "Common/Log.h"
+#include "Common/Serialize/SerializeFuncs.h"
+#include "Common/TimeUtil.h"
 #include "Core/Config.h"
+#include "Core/Core.h"
 #include "Core/CoreTiming.h"
+#include "Core/Host.h"
 #include "Core/MemMapHelpers.h"
 #include "Core/Reporting.h"
-
-#include "Core/Core.h"
-#include "Core/Host.h"
 #include "Core/System.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/MIPS/MIPSCodeUtils.h"
@@ -128,19 +128,19 @@ void HLEDoState(PointerWrap &p) {
 
 	// Can't be inside a syscall, reset this so errors aren't misleading.
 	latestSyscall = nullptr;
-	p.Do(delayedResultEvent);
+	Do(p, delayedResultEvent);
 	CoreTiming::RestoreRegisterEvent(delayedResultEvent, "HLEDelayedResult", hleDelayResultFinish);
 
 	if (s >= 2) {
 		int actions = (int)mipsCallActions.size();
-		p.Do(actions);
+		Do(p, actions);
 		if (actions != (int)mipsCallActions.size()) {
 			mipsCallActions.resize(actions);
 		}
 
 		for (auto &action : mipsCallActions) {
 			int actionTypeID = action != nullptr ? action->actionTypeID : -1;
-			p.Do(actionTypeID);
+			Do(p, actionTypeID);
 			if (actionTypeID != -1) {
 				if (p.mode == p.MODE_READ)
 					action = __KernelCreateAction(actionTypeID);
@@ -365,28 +365,30 @@ bool hleExecuteDebugBreak(const HLEFunction &func)
 	return true;
 }
 
-u32 hleDelayResult(u32 result, const char *reason, int usec)
-{
-	if (__KernelIsDispatchEnabled())
-	{
-		CoreTiming::ScheduleEvent(usToCycles(usec), delayedResultEvent, __KernelGetCurThread());
+u32 hleDelayResult(u32 result, const char *reason, int usec) {
+	if (!__KernelIsDispatchEnabled()) {
+		WARN_LOG(HLE, "%s: Dispatch disabled, not delaying HLE result (right thing to do?)", latestSyscall ? latestSyscall->name : "?");
+	} else {
+		SceUID thread = __KernelGetCurThread();
+		if (KernelIsThreadWaiting(thread))
+			ERROR_LOG(HLE, "%s: Delaying a thread that's already waiting", latestSyscall ? latestSyscall->name : "?");
+		CoreTiming::ScheduleEvent(usToCycles(usec), delayedResultEvent, thread);
 		__KernelWaitCurThread(WAITTYPE_HLEDELAY, 1, result, 0, false, reason);
 	}
-	else
-		WARN_LOG(HLE, "Dispatch disabled, not delaying HLE result (right thing to do?)");
 	return result;
 }
 
-u64 hleDelayResult(u64 result, const char *reason, int usec)
-{
-	if (__KernelIsDispatchEnabled())
-	{
-		u64 param = (result & 0xFFFFFFFF00000000) | __KernelGetCurThread();
+u64 hleDelayResult(u64 result, const char *reason, int usec) {
+	if (!__KernelIsDispatchEnabled()) {
+		WARN_LOG(HLE, "%s: Dispatch disabled, not delaying HLE result (right thing to do?)", latestSyscall ? latestSyscall->name : "?");
+	} else {
+		SceUID thread = __KernelGetCurThread();
+		if (KernelIsThreadWaiting(thread))
+			ERROR_LOG(HLE, "%s: Delaying a thread that's already waiting", latestSyscall ? latestSyscall->name : "?");
+		u64 param = (result & 0xFFFFFFFF00000000) | thread;
 		CoreTiming::ScheduleEvent(usToCycles(usec), delayedResultEvent, param);
-		__KernelWaitCurThread(WAITTYPE_HLEDELAY, 1, (u32) result, 0, false, reason);
+		__KernelWaitCurThread(WAITTYPE_HLEDELAY, 1, (u32)result, 0, false, reason);
 	}
-	else
-		WARN_LOG(HLE, "Dispatch disabled, not delaying HLE result (right thing to do?)");
 	return result;
 }
 
@@ -628,7 +630,7 @@ inline void CallSyscallWithFlags(const HLEFunction *info)
 	if (flags & HLE_CLEAR_STACK_BYTES) {
 		u32 stackStart = __KernelGetCurThreadStackStart();
 		if (currentMIPS->r[MIPS_REG_SP] - info->stackBytesToClear >= stackStart) {
-			Memory::Memset(currentMIPS->r[MIPS_REG_SP] - info->stackBytesToClear, 0, info->stackBytesToClear);
+			Memory::Memset(currentMIPS->r[MIPS_REG_SP] - info->stackBytesToClear, 0, info->stackBytesToClear, "HLEStackClear");
 		}
 	}
 
@@ -705,7 +707,6 @@ void CallSyscall(MIPSOpcode op)
 	PROFILE_THIS_SCOPE("syscall");
 	double start = 0.0;  // need to initialize to fix the race condition where coreCollectDebugStats is enabled in the middle of this func.
 	if (coreCollectDebugStats) {
-		time_update();
 		start = time_now_d();
 	}
 
@@ -729,11 +730,11 @@ void CallSyscall(MIPSOpcode op)
 	}
 
 	if (coreCollectDebugStats) {
-		time_update();
 		u32 callno = (op >> 6) & 0xFFFFF; //20 bits
 		int funcnum = callno & 0xFFF;
 		int modulenum = (callno & 0xFF000) >> 12;
 		double total = time_now_d() - start - hleSteppingTime;
+		_dbg_assert_msg_(total >= 0.0, "Time spent in syscall became negative");
 		hleSteppingTime = 0.0;
 		updateSyscallStats(modulenum, funcnum, total);
 	}
@@ -875,7 +876,7 @@ void hleDoLogInternal(LogTypes::LOG_TYPE t, LogTypes::LOG_LEVELS level, u64 res,
 
 	if (reportTag != nullptr) {
 		// A blank string means always log, not just once.
-		if (reportTag[0] == '\0' || Reporting::ShouldLogOnce(reportTag)) {
+		if (reportTag[0] == '\0' || Reporting::ShouldLogNTimes(reportTag, 1)) {
 			// Here we want the original key, so that different args, etc. group together.
 			std::string key = std::string(kernelFlag) + std::string("%08x=") + funcName + "(%s)";
 			if (reason != nullptr)

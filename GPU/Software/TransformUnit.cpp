@@ -16,7 +16,10 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include <cmath>
-#include "math/math_util.h"
+#include <algorithm>
+
+#include "Common/CPUDetect.h"
+#include "Common/Math/math_util.h"
 #include "Common/MemoryUtil.h"
 #include "Core/Config.h"
 #include "GPU/GPUState.h"
@@ -254,7 +257,7 @@ VertexData TransformUnit::ReadVertex(VertexReader& vreader)
 				break;
 
 			case GE_PROJMAP_NORMALIZED_NORMAL:
-				source = vertex.normal.Normalized();
+				source = vertex.normal.NormalizedOr001(cpu_info.bSSE4_1);
 				break;
 
 			case GE_PROJMAP_NORMAL:
@@ -565,8 +568,8 @@ bool TransformUnit::GetCurrentSimpleVertices(int count, std::vector<GPUDebugVert
 
 	if (count > 0 && (gstate.vertType & GE_VTYPE_IDX_MASK) != GE_VTYPE_IDX_NONE) {
 		const u8 *inds = Memory::GetPointer(gstate_c.indexAddr);
-		const u16 *inds16 = (const u16 *)inds;
-		const u32 *inds32 = (const u32 *)inds;
+		const u16_le *inds16 = (const u16_le *)inds;
+		const u32_le *inds32 = (const u32_le *)inds;
 
 		if (inds) {
 			GetIndexBounds(inds, count, gstate.vertType, &indexLowerBound, &indexUpperBound);

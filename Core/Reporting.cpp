@@ -19,10 +19,16 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
+#include <set>
+#include <cstdlib>
+#include <cstdarg>
 
 #include "Core/Reporting.h"
-
+#include "Common/File/VFS/VFS.h"
 #include "Common/CPUDetect.h"
+#include "Common/File/FileUtil.h"
+#include "Common/Serialize/SerializeFuncs.h"
+#include "Common/StringUtils.h"
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
 #include "Core/Config.h"
@@ -32,23 +38,16 @@
 #include "Core/System.h"
 #include "Core/FileSystems/BlockDevices.h"
 #include "Core/FileSystems/MetaFileSystem.h"
+#include "Core/HLE/Plugins.h"
 #include "Core/HLE/sceDisplay.h"
 #include "Core/HLE/sceKernelMemory.h"
 #include "Core/ELF/ParamSFO.h"
 #include "GPU/GPUInterface.h"
 #include "GPU/GPUState.h"
-#include "net/http_client.h"
-#include "net/resolve.h"
-#include "net/url.h"
-
-#include "base/stringutil.h"
-#include "base/buffer.h"
-#include "thread/threadutil.h"
-#include "file/zip_read.h"
-
-#include <set>
-#include <stdlib.h>
-#include <cstdarg>
+#include "Common/Net/HTTPClient.h"
+#include "Common/Net/Resolve.h"
+#include "Common/Net/URL.h"
+#include "Common/Thread/ThreadUtil.h"
 
 namespace Reporting
 {
@@ -61,7 +60,9 @@ namespace Reporting
 	// Temporarily stores a reference to the hostname.
 	static std::string lastHostname;
 	// Keeps track of report-only-once identifiers.  Since they're always constants, a pointer is okay.
-	static std::set<const char *> logOnceUsed;
+	static std::map<const char *, int> logNTimes;
+	static std::mutex logNTimesLock;
+
 	// Keeps track of whether a harmful setting was ever used.
 	static bool everUnsupported = false;
 	// Support is cached here to avoid checking it on every single request.
@@ -101,6 +102,8 @@ namespace Reporting
 	static std::condition_variable crcCond;
 	static std::string crcFilename;
 	static std::map<std::string, u32> crcResults;
+	static volatile bool crcPending = false;
+	static volatile bool crcCancel = false;
 	static std::thread crcThread;
 
 	static int CalculateCRCThread() {
@@ -112,7 +115,7 @@ namespace Reporting
 
 		u32 crc = 0;
 		if (blockDevice) {
-			crc = blockDevice->CalculateCRC();
+			crc = blockDevice->CalculateCRC(&crcCancel);
 		}
 
 		delete blockDevice;
@@ -120,15 +123,15 @@ namespace Reporting
 
 		std::lock_guard<std::mutex> guard(crcLock);
 		crcResults[crcFilename] = crc;
+		crcPending = false;
 		crcCond.notify_one();
 
 		return 0;
 	}
 
-	void QueueCRC() {
+	void QueueCRC(const std::string &gamePath) {
 		std::lock_guard<std::mutex> guard(crcLock);
 
-		const std::string &gamePath = PSP_CoreParameter().fileToStart;
 		auto it = crcResults.find(gamePath);
 		if (it != crcResults.end()) {
 			// Nothing to do, we've already calculated it.
@@ -136,18 +139,24 @@ namespace Reporting
 			return;
 		}
 
-		if (crcFilename == gamePath) {
+		if (crcPending) {
 			// Already in process.
 			return;
 		}
 
 		crcFilename = gamePath;
+		crcPending = true;
+		crcCancel = false;
 		crcThread = std::thread(CalculateCRCThread);
 	}
 
-	u32 RetrieveCRC() {
-		const std::string &gamePath = PSP_CoreParameter().fileToStart;
-		QueueCRC();
+	bool HasCRC(const std::string &gamePath) {
+		std::lock_guard<std::mutex> guard(crcLock);
+		return crcResults.find(gamePath) != crcResults.end();
+	}
+
+	uint32_t RetrieveCRC(const std::string &gamePath) {
+		QueueCRC(gamePath);
 
 		std::unique_lock<std::mutex> guard(crcLock);
 		auto it = crcResults.find(gamePath);
@@ -159,6 +168,26 @@ namespace Reporting
 		if (crcThread.joinable())
 			crcThread.join();
 		return it->second;
+	}
+
+	static uint32_t RetrieveCRCUnlessPowerSaving(const std::string &gamePath) {
+		// It's okay to use it if we have it already.
+		if (Core_GetPowerSaving() && !HasCRC(gamePath)) {
+			return 0;
+		}
+
+		return RetrieveCRC(gamePath);
+	}
+
+	static void PurgeCRC() {
+		std::unique_lock<std::mutex> guard(crcLock);
+		crcCancel = true;
+		while (crcPending) {
+			crcCond.wait(guard);
+		}
+
+		if (crcThread.joinable())
+			crcThread.join();
 	}
 
 	// Returns the full host (e.g. report.ppsspp.org:80.)
@@ -230,7 +259,6 @@ namespace Reporting
 
 	bool SendReportRequest(const char *uri, const std::string &data, const std::string &mimeType, Buffer *output = NULL)
 	{
-		bool result = false;
 		http::Client http;
 		Buffer theVoid;
 
@@ -304,7 +332,7 @@ namespace Reporting
 	{
 		// New game, clean slate.
 		spamProtectionCount = 0;
-		logOnceUsed.clear();
+		logNTimes.clear();
 		everUnsupported = false;
 		currentSupported = IsSupported();
 		pendingMessagesDone = false;
@@ -320,6 +348,7 @@ namespace Reporting
 			compatThread.join();
 		if (messageThread.joinable())
 			messageThread.join();
+		PurgeCRC();
 
 		// Just so it can be enabled in the menu again.
 		Init();
@@ -335,7 +364,7 @@ namespace Reporting
 			return;
 		}
 
-		p.Do(everUnsupported);
+		Do(p, everUnsupported);
 	}
 
 	void UpdateConfig()
@@ -345,10 +374,27 @@ namespace Reporting
 			everUnsupported = true;
 	}
 
-	bool ShouldLogOnce(const char *identifier)
+	bool ShouldLogNTimes(const char *identifier, int count)
 	{
 		// True if it wasn't there already -> so yes, log.
-		return logOnceUsed.insert(identifier).second;
+		std::lock_guard<std::mutex> lock(logNTimesLock);
+		auto iter = logNTimes.find(identifier);
+		if (iter == logNTimes.end()) {
+			logNTimes.insert(std::pair<const char*, int>(identifier, 1));
+			return true;
+		} else {
+			if (iter->second >= count) {
+				return false;
+			} else {
+				iter->second++;
+				return true;
+			}
+		}
+	}
+
+	void ResetCounts() {
+		std::lock_guard<std::mutex> lock(logNTimesLock);
+		logNTimes.clear();
 	}
 
 	std::string CurrentGameID()
@@ -450,7 +496,7 @@ namespace Reporting
 			postdata.Add("graphics", StringFromFormat("%d", payload.int1));
 			postdata.Add("speed", StringFromFormat("%d", payload.int2));
 			postdata.Add("gameplay", StringFromFormat("%d", payload.int3));
-			postdata.Add("crc", StringFromFormat("%08x", Core_GetPowerSaving() ? 0 : RetrieveCRC()));
+			postdata.Add("crc", StringFromFormat("%08x", RetrieveCRCUnlessPowerSaving(PSP_CoreParameter().fileToStart)));
 			postdata.Add("suggestions", payload.string1 != "perfect" && payload.string1 != "playable" ? "1" : "0");
 			AddScreenshotData(postdata, payload.string2);
 			payload.string1.clear();
@@ -484,7 +530,7 @@ namespace Reporting
 	bool IsSupported()
 	{
 		// Disabled when using certain hacks, because they make for poor reports.
-		if (CheatsInEffect())
+		if (CheatsInEffect() || HLEPlugins::HasEnabled())
 			return false;
 		if (g_Config.iLockedCPUSpeed != 0)
 			return false;

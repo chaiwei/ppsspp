@@ -3,10 +3,22 @@
 #include <thread>
 #include <atomic>
 #include <vector>
-#include <stdlib.h>
+#include <cstdlib>
 
-#include "base/timeutil.h"
-#include "Common/ChunkFile.h"
+#include "Common/Log.h"
+#include "Common/LogManager.h"
+#include "Common/System/Display.h"
+#include "Common/System/NativeApp.h"
+#include "Common/System/System.h"
+#include "Common/TimeUtil.h"
+#include "Common/File/FileUtil.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/ConsoleListener.h"
+#include "Common/Input/InputState.h"
+#include "Common/Thread/ThreadUtil.h"
+#include "Common/File/VFS/VFS.h"
+#include "Common/File/VFS/AssetReader.h"
+
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
 #include "Core/Core.h"
@@ -17,18 +29,12 @@
 #include "Core/Host.h"
 #include "Core/MemMap.h"
 #include "Core/System.h"
-#include "Log.h"
-#include "LogManager.h"
-#include "ConsoleListener.h"
-#include "file/vfs.h"
-#include "file/zip_read.h"
+
 #include "GPU/GPUState.h"
 #include "GPU/GPUInterface.h"
 #include "GPU/Common/FramebufferManagerCommon.h"
 #include "GPU/Common/TextureScalerCommon.h"
-#include "input/input_state.h"
-#include "base/NativeApp.h"
-#include "thread/threadutil.h"
+#include "GPU/Common/PresentationCommon.h"
 
 #include "libretro/libretro.h"
 #include "libretro/LibretroGraphicsContext.h"
@@ -203,13 +209,14 @@ static RetroOption<int> ppsspp_texture_scaling_level("ppsspp_texture_scaling_lev
 static RetroOption<int> ppsspp_texture_scaling_type("ppsspp_texture_scaling_type", "Texture Scaling Type", { { "xbrz", TextureScalerCommon::XBRZ }, { "hybrid", TextureScalerCommon::HYBRID }, { "bicubic", TextureScalerCommon::BICUBIC }, { "hybrid_bicubic", TextureScalerCommon::HYBRID_BICUBIC } });
 static RetroOption<int> ppsspp_texture_filtering("ppsspp_texture_filtering", "Texture Filtering", { { "auto", 1 }, { "nearest", 2 }, { "linear", 3 }, { "linear(FMV)", 4 } });
 static RetroOption<int> ppsspp_texture_anisotropic_filtering("ppsspp_texture_anisotropic_filtering", "Anisotropic Filtering", { "off", "1x", "2x", "4x", "8x", "16x" });
+static RetroOption<int> ppsspp_lower_resolution_for_effects("ppsspp_lower_resolution_for_effects", "Lower resolution for effects", { "off", "safe", "balanced", "aggressive" });
 static RetroOption<bool> ppsspp_texture_deposterize("ppsspp_texture_deposterize", "Texture Deposterize", false);
 static RetroOption<bool> ppsspp_texture_replacement("ppsspp_texture_replacement", "Texture Replacement", false);
 static RetroOption<bool> ppsspp_gpu_hardware_transform("ppsspp_gpu_hardware_transform", "GPU Hardware T&L", true);
 static RetroOption<bool> ppsspp_vertex_cache("ppsspp_vertex_cache", "Vertex Cache (Speedhack)", true);
-static RetroOption<bool> ppsspp_unsafe_func_replacements("ppsspp_unsafe_func_replacements", "Unsafe FuncReplacements", true);
 static RetroOption<bool> ppsspp_cheats("ppsspp_cheats", "Internal Cheats Support", false);
 static RetroOption<IOTimingMethods> ppsspp_io_timing_method("ppsspp_io_timing_method", "IO Timing Method", { { "Fast", IOTimingMethods::IOTIMING_FAST }, { "Host", IOTimingMethods::IOTIMING_HOST }, { "Simulate UMD delays", IOTimingMethods::IOTIMING_REALISTIC } });
+static RetroOption<bool> ppsspp_frame_duplication("ppsspp_frame_duplication", "Duplicate frames in 30hz games", false);
 
 void retro_set_environment(retro_environment_t cb)
 {
@@ -233,9 +240,10 @@ void retro_set_environment(retro_environment_t cb)
    vars.push_back(ppsspp_texture_replacement.GetOptions());
    vars.push_back(ppsspp_gpu_hardware_transform.GetOptions());
    vars.push_back(ppsspp_vertex_cache.GetOptions());
-   vars.push_back(ppsspp_unsafe_func_replacements.GetOptions());
    vars.push_back(ppsspp_cheats.GetOptions());
    vars.push_back(ppsspp_io_timing_method.GetOptions());
+   vars.push_back(ppsspp_lower_resolution_for_effects.GetOptions());
+   vars.push_back(ppsspp_frame_duplication.GetOptions());
    vars.push_back({});
 
    environ_cb = cb;
@@ -300,12 +308,13 @@ static void check_variables(CoreParameter &coreParam)
    ppsspp_texture_anisotropic_filtering.Update(&g_Config.iAnisotropyLevel);
    ppsspp_texture_deposterize.Update(&g_Config.bTexDeposterize);
    ppsspp_texture_replacement.Update(&g_Config.bReplaceTextures);
-   ppsspp_unsafe_func_replacements.Update(&g_Config.bFuncReplacements);
    ppsspp_cheats.Update(&g_Config.bEnableCheats);
    ppsspp_locked_cpu_speed.Update(&g_Config.iLockedCPUSpeed);
    ppsspp_rendering_mode.Update(&g_Config.iRenderingMode);
    ppsspp_cpu_core.Update((CPUCore *)&g_Config.iCpuCore);
    ppsspp_io_timing_method.Update((IOTimingMethods *)&g_Config.iIOTimingMethod);
+   ppsspp_lower_resolution_for_effects.Update(&g_Config.iBloomHack);
+   ppsspp_frame_duplication.Update(&g_Config.bRenderDuplicateFrames);
 
    ppsspp_language.Update(&g_Config.iLanguage);
    if (g_Config.iLanguage < 0)
@@ -313,10 +322,8 @@ static void check_variables(CoreParameter &coreParam)
 
    if (!PSP_IsInited() && ppsspp_internal_resolution.Update(&g_Config.iInternalResolution))
    {
-      coreParam.pixelWidth  = coreParam.renderWidth  = 
-         g_Config.iInternalResolution * 480;
-      coreParam.pixelHeight = coreParam.renderHeight = 
-         g_Config.iInternalResolution * 272;
+      coreParam.pixelWidth  = coreParam.renderWidth  = g_Config.iInternalResolution * 480;
+      coreParam.pixelHeight = coreParam.renderHeight = g_Config.iInternalResolution * 272;
 
       if (gpu)
       {
@@ -347,17 +354,20 @@ void retro_init(void)
 #endif
 
    g_Config.bEnableLogging = true;
+   // libretro does its own timing, so this should stay CONTINUOUS.
    g_Config.iUnthrottleMode = (int)UnthrottleMode::CONTINUOUS;
-   g_Config.bMemStickInserted = PSP_MEMORYSTICK_STATE_INSERTED;
+   g_Config.bMemStickInserted = true;
    g_Config.iGlobalVolume = VOLUME_MAX - 1;
    g_Config.iAltSpeedVolume = -1;
    g_Config.bEnableSound = true;
    g_Config.iCwCheatRefreshRate = 60;
+   g_Config.iMemStickSizeGB = 16;
+   g_Config.bFuncReplacements = true;
 
    g_Config.iFirmwareVersion = PSP_DEFAULT_FIRMWARE;
    g_Config.iPSPModel = PSP_MODEL_SLIM;
 
-   LogManager::Init();
+   LogManager::Init(&g_Config.bEnableLogging);
 
    host = new LibretroHost;
 
@@ -416,7 +426,7 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
    info->geometry.base_height  = g_Config.iInternalResolution * 272;
    info->geometry.max_width    = g_Config.iInternalResolution * 480;
    info->geometry.max_height   = g_Config.iInternalResolution * 272;
-   info->geometry.aspect_ratio = 16.0 / 9.0;
+   info->geometry.aspect_ratio = 480.0 / 272.0;  // Not 16:9! But very, very close.
 }
 
 unsigned retro_api_version(void) { return RETRO_API_VERSION; }
@@ -884,6 +894,11 @@ float System_GetPropertyFloat(SystemProperty prop)
    {
       case SYSPROP_DISPLAY_REFRESH_RATE:
          return 60.f;
+      case SYSPROP_DISPLAY_SAFE_INSET_LEFT:
+      case SYSPROP_DISPLAY_SAFE_INSET_RIGHT:
+      case SYSPROP_DISPLAY_SAFE_INSET_TOP:
+      case SYSPROP_DISPLAY_SAFE_INSET_BOTTOM:
+         return 0.0f;
       default:
          break;
    }
@@ -892,6 +907,8 @@ float System_GetPropertyFloat(SystemProperty prop)
 }
 
 std::string System_GetProperty(SystemProperty prop) { return ""; }
+std::vector<std::string> System_GetPropertyStringVec(SystemProperty prop) { return std::vector<std::string>(); }
+
 void System_SendMessage(const char *command, const char *parameter) {}
 void NativeUpdate() {}
 void NativeRender(GraphicsContext *graphicsContext) {}
@@ -899,6 +916,8 @@ void NativeResized() {}
 
 #if PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(IOS)
 std::vector<std::string> __cameraGetDeviceList() { return std::vector<std::string>(); }
+bool audioRecording_Available() { return false; }
+bool audioRecording_State() { return false; }
 
 void System_InputBoxGetString(const std::string &title, const std::string &defaultValue, std::function<void(bool, const std::string &)> cb) { cb(false, ""); }
 #endif

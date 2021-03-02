@@ -18,7 +18,7 @@
 #include "ppsspp_config.h"
 #if PPSSPP_ARCH(X86) || PPSSPP_ARCH(AMD64)
 
-#include "math/math_util.h"
+#include "Common/Math/math_util.h"
 
 #include "ABI.h"
 #include "x64Emitter.h"
@@ -66,7 +66,7 @@ void ImHere() {
 }
 
 void Jit::GenerateFixedCode(JitOptions &jo) {
-	const u8 *start = AlignCodePage();
+	AlignCodePage();
 	BeginWrite();
 
 	restoreRoundingMode = AlignCode16(); {
@@ -161,7 +161,7 @@ void Jit::GenerateFixedCode(JitOptions &jo) {
 #ifdef MASKED_PSP_MEMORY
 			AND(32, R(EAX), Imm32(Memory::MEMVIEW32_MASK));
 #endif
-
+			dispatcherFetch = GetCodePtr();
 #ifdef _M_IX86
 			_assert_msg_( Memory::base != 0, "Memory base bogus");
 			MOV(32, R(EAX), MDisp(EAX, (u32)Memory::base));
